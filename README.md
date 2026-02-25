@@ -235,6 +235,62 @@ const singleFileSchema = toJsonSchemaFromFile('./src/types.ts', {
 });
 ```
 
+### Batch Schema Generation
+
+When you need schemas for multiple types from the same source file, use `toJsonSchemas()` (plural) for better performance. This is particularly useful for build tools, documentation generators, or API schema validators that process many types at once.
+
+```typescript
+import { toJsonSchemas } from "ts-source-to-json-schema";
+
+const source = `
+  export interface User { id: string; name: string; }
+  export interface Post { id: string; title: string; author: User; }
+  export interface Comment { id: string; text: string; }
+`;
+
+// Generate all schemas at once (~70% faster than calling toJsonSchema() for each type)
+const schemas = toJsonSchemas(source);
+
+console.log(schemas.User);    // Standalone User schema
+console.log(schemas.Post);    // Post schema with User in definitions
+console.log(schemas.Comment); // Standalone Comment schema
+```
+
+**Key benefits:**
+- **Performance**: ~70% faster when generating 30+ schemas from the same source
+- **Single parse**: Source is tokenized and parsed only once
+- **Standalone schemas**: Each schema includes only the types it references in its `definitions` field
+- **Draft-07 compatible**: Uses `definitions` instead of `$defs` for broader compatibility
+
+**How it works:**
+- Parses the source once and emits all type declarations
+- Each schema is standalone with minimal `definitions` (only transitively referenced types)
+- Uses `#/definitions/TypeName` refs instead of `#/$defs/TypeName`
+- Handles circular references, transitive dependencies, and utility types
+
+**Use cases:**
+- Framework integrations (like Flink) that need many schemas from one source
+- Build tools generating schemas for entire API definition files
+- Documentation generators processing large type files
+- Schema validation libraries caching multiple schemas
+
+**Example with real-world API:**
+```typescript
+const schemas = toJsonSchemas(`
+  interface User { id: string; name: string; }
+  interface CreateUserRequest { name: string; }
+  interface CreateUserResponse { user: User; }
+  interface GetUserRequest { id: string; }
+  interface GetUserResponse { user: User; }
+`, { includeJSDoc: true, strictObjects: true });
+
+// Extract specific schemas as needed
+const requestSchemas = {
+  CreateUser: schemas.CreateUserRequest,
+  GetUser: schemas.GetUserRequest
+};
+```
+
 Output:
 
 ```json

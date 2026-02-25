@@ -81,6 +81,48 @@ export function toJsonSchema(source: string, options?: EmitterOptions): JSONSche
 }
 
 /**
+ * Generates JSON schemas for all top-level type definitions in the source.
+ *
+ * More efficient than calling toJsonSchema() multiple times when you need
+ * multiple schemas from the same source file. Each schema is standalone
+ * and includes only the types it references in its `definitions` field.
+ *
+ * @param source - TypeScript source code
+ * @param options - Schema generation options (rootType is ignored)
+ * @returns Map of type name to JSON schema
+ *
+ * @example
+ * ```ts
+ * const source = `
+ *   export interface User { id: string; name: string; }
+ *   export interface Post { id: string; title: string; author: User; }
+ * `;
+ *
+ * const schemas = toJsonSchemas(source);
+ * // Returns:
+ * // {
+ * //   "User": { type: "object", properties: {...}, required: [...], definitions: {} },
+ * //   "Post": { type: "object", properties: {...}, required: [...], definitions: { User: {...} } }
+ * // }
+ * ```
+ */
+export function toJsonSchemas(
+  source: string,
+  options?: Omit<EmitterOptions, 'rootType'>
+): Record<string, JSONSchema> {
+  // Tokenize once
+  const tokens = tokenize(source);
+
+  // Parse once
+  const parser = new Parser(tokens);
+  const declarations = parser.parse();
+
+  // Emit all schemas in batch
+  const emitter = new Emitter(declarations, options || {});
+  return emitter.emitAll();
+}
+
+/**
  * Parse TypeScript source and return the AST declarations.
  * Useful for inspection or custom transformations.
  */

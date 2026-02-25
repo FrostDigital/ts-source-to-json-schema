@@ -111,6 +111,205 @@ export class Emitter {
     return result;
   }
 
+  /**
+   * Emits schemas for all declarations at once.
+   * More efficient than calling emit() multiple times.
+   * Each schema is standalone with only its transitively referenced types in definitions.
+   */
+  emitAll(): Record<string, JSONSchema> {
+    const schemas: Record<string, JSONSchema> = {};
+
+    for (const [typeName, decl] of this.declarations) {
+      schemas[typeName] = this.emitDeclarationStandalone(decl);
+    }
+
+    return schemas;
+  }
+
+  /**
+   * Emits a declaration as a standalone schema with minimal definitions.
+   * Only includes types that are transitively referenced.
+   * Uses "definitions" (draft-07 style) instead of "$defs" for compatibility.
+   */
+  private emitDeclarationStandalone(decl: Declaration): JSONSchema {
+    // Find direct references from this declaration (not including the type itself)
+    const directRefs = this.findDirectReferences(decl);
+
+    // Collect all types transitively referenced (excluding the starting type)
+    const referencedTypes = new Set<string>();
+    for (const ref of directRefs) {
+      this.collectTransitiveReferences(ref, referencedTypes);
+    }
+
+    // Check if this type is self-referential
+    const selfReferenced = referencedTypes.has(decl.name);
+
+    // Emit the main schema
+    const schema = this.emitDeclaration(decl);
+
+    // Build minimal definitions object
+    const definitions: Record<string, JSONSchema> = {};
+
+    // If type is self-referential, include it in its own definitions
+    if (selfReferenced) {
+      definitions[decl.name] = schema;
+    }
+
+    // Add all referenced types
+    for (const typeName of referencedTypes) {
+      if (typeName !== decl.name) {
+        const referencedDecl = this.declarations.get(typeName);
+        if (referencedDecl) {
+          definitions[typeName] = this.emitDeclaration(referencedDecl);
+        }
+      }
+    }
+
+    // Convert $ref paths from #/$defs/ to #/definitions/
+    const schemaWithDefinitions = this.convertRefsToDefinitions(schema);
+    const convertedDefinitions: Record<string, JSONSchema> = {};
+    for (const [name, def] of Object.entries(definitions)) {
+      convertedDefinitions[name] = this.convertRefsToDefinitions(def);
+    }
+
+    // Return standalone schema
+    return {
+      ...schemaWithDefinitions,
+      definitions: Object.keys(convertedDefinitions).length > 0 ? convertedDefinitions : {}
+    };
+  }
+
+  /**
+   * Recursively collects all type names that are transitively referenced by a given type.
+   */
+  private collectTransitiveReferences(startTypeName: string, visited: Set<string> = new Set()): Set<string> {
+    if (visited.has(startTypeName)) {
+      return visited;
+    }
+
+    visited.add(startTypeName);
+
+    const decl = this.declarations.get(startTypeName);
+    if (!decl) return visited;
+
+    // Find all direct references in this declaration
+    const directRefs = this.findDirectReferences(decl);
+
+    // Recursively collect references from those types
+    for (const ref of directRefs) {
+      this.collectTransitiveReferences(ref, visited);
+    }
+
+    return visited;
+  }
+
+  /**
+   * Finds all direct type references in a declaration.
+   */
+  private findDirectReferences(decl: Declaration): string[] {
+    const refs: string[] = [];
+
+    const collectRefs = (typeNode: TypeNode) => {
+      switch (typeNode.kind) {
+        case "reference":
+          // Skip built-in types
+          if (!this.isBuiltInType(typeNode.name)) {
+            refs.push(typeNode.name);
+          }
+          // Also collect from type arguments
+          if (typeNode.typeArgs) {
+            typeNode.typeArgs.forEach(arg => collectRefs(arg));
+          }
+          break;
+        case "object":
+          typeNode.properties.forEach(p => collectRefs(p.type));
+          if (typeNode.indexSignature) {
+            collectRefs(typeNode.indexSignature.keyType);
+            collectRefs(typeNode.indexSignature.valueType);
+          }
+          break;
+        case "array":
+          collectRefs(typeNode.element);
+          break;
+        case "tuple":
+          typeNode.elements.forEach(e => collectRefs(e.type));
+          break;
+        case "union":
+          typeNode.members.forEach(m => collectRefs(m));
+          break;
+        case "intersection":
+          typeNode.members.forEach(m => collectRefs(m));
+          break;
+        case "parenthesized":
+          collectRefs(typeNode.inner);
+          break;
+        case "record":
+          collectRefs(typeNode.keyType);
+          collectRefs(typeNode.valueType);
+          break;
+        case "mapped":
+          collectRefs(typeNode.constraint);
+          collectRefs(typeNode.valueType);
+          break;
+      }
+    };
+
+    if (decl.kind === "interface") {
+      decl.properties.forEach(p => collectRefs(p.type));
+      if (decl.extends) {
+        decl.extends.forEach(e => collectRefs(e));
+      }
+      if (decl.indexSignature) {
+        collectRefs(decl.indexSignature.keyType);
+        collectRefs(decl.indexSignature.valueType);
+      }
+    } else if (decl.kind === "type_alias") {
+      collectRefs(decl.type);
+    }
+    // Enums don't have type references
+
+    return refs;
+  }
+
+  /**
+   * Checks if a type name refers to a built-in type that shouldn't be in definitions.
+   */
+  private isBuiltInType(name: string): boolean {
+    const builtIns = [
+      "Date", "Promise", "Array", "Set", "Map", "Record",
+      "Partial", "Required", "Pick", "Omit", "Readonly", "NonNullable"
+    ];
+    return builtIns.includes(name);
+  }
+
+  /**
+   * Recursively converts $ref paths from #/$defs/ to #/definitions/ in a schema.
+   */
+  private convertRefsToDefinitions(schema: JSONSchema): JSONSchema {
+    if (typeof schema !== "object" || schema === null) {
+      return schema;
+    }
+
+    const converted: JSONSchema = {};
+
+    for (const [key, value] of Object.entries(schema)) {
+      if (key === "$ref" && typeof value === "string") {
+        // Convert #/$defs/TypeName to #/definitions/TypeName
+        converted[key] = value.replace(/^#\/\$defs\//, "#/definitions/");
+      } else if (Array.isArray(value)) {
+        converted[key] = value.map(item =>
+          typeof item === "object" ? this.convertRefsToDefinitions(item) : item
+        );
+      } else if (typeof value === "object" && value !== null) {
+        converted[key] = this.convertRefsToDefinitions(value as JSONSchema);
+      } else {
+        converted[key] = value;
+      }
+    }
+
+    return converted;
+  }
+
   // ---------------------------------------------------------------------------
   // Declaration emission
   // ---------------------------------------------------------------------------
