@@ -162,3 +162,50 @@ export function toJsonSchemaFromFile(
   const emitter = new Emitter(declarations, options);
   return emitter.emit();
 }
+
+/**
+ * Generates JSON schemas for all types in a TypeScript file, following imports.
+ *
+ * This is the batch version of toJsonSchemaFromFile(). It resolves imports
+ * and generates standalone schemas for all exported types in one pass.
+ *
+ * @param entryPath - Path to the TypeScript file
+ * @param options - Schema generation options (rootType is ignored)
+ * @returns Map of type name to JSON schema
+ *
+ * @example
+ * ```ts
+ * // schemas.ts:
+ * // import TreeNode from "../../src/schemas/TreeNode";
+ * // export interface GetTree_12_ResSchema extends TreeNode {}
+ *
+ * const schemas = toJsonSchemasFromFile('./schemas.ts', {
+ *   followImports: 'local'
+ * });
+ *
+ * console.log(schemas.GetTree_12_ResSchema);
+ * // {
+ * //   "$ref": "#/definitions/TreeNode",
+ * //   "definitions": { "TreeNode": { ... } }  // ✅ Included!
+ * // }
+ * ```
+ */
+export function toJsonSchemasFromFile(
+  entryPath: string,
+  options?: Omit<EmitterOptions, 'rootType'>
+): Record<string, JSONSchema> {
+  const followMode = options?.followImports ?? "none";
+  const baseDir = options?.baseDir ?? path.dirname(path.resolve(entryPath));
+
+  if (followMode === "none") {
+    // Single-file mode (backward compatible)
+    const source = fs.readFileSync(entryPath, "utf-8");
+    return toJsonSchemas(source, options);
+  }
+
+  // Multi-file mode
+  const resolver = new ModuleResolver({ followImports: followMode, baseDir });
+  const declarations = resolver.resolveFromEntry(entryPath);
+  const emitter = new Emitter(declarations, options || {});
+  return emitter.emitAll();
+}
