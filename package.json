@@ -1,0 +1,41 @@
+{
+  "name": "ts-source-to-json-schema",
+  "version": "0.1.0",
+  "description": "A zero-dependency TypeScript-to-JSON Schema converter that uses its own mini-parser",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:watch": "npm test -- --watch",
+    "test:coverage": "npm test -- --coverage",
+    "test:legacy": "tsx src/test.ts",
+    "dev": "tsx src/index.ts",
+    "clean": "rm -rf dist coverage"
+  },
+  "keywords": [
+    "typescript",
+    "json-schema",
+    "parser",
+    "converter",
+    "validation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@jest/globals": "^30.2.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^25.3.0",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.6",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}

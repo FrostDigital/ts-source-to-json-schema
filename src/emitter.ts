@@ -1,0 +1,534 @@
+// ============================================================================
+// Emitter - Transforms AST nodes into JSON Schema (2020-12 draft)
+// ============================================================================
+
+import type {
+  Declaration, TypeNode, PropertyNode, InterfaceDeclaration,
+  TypeAliasDeclaration, EnumDeclaration, IndexSignatureNode,
+} from "./ast.js";
+
+export interface JSONSchema {
+  $schema?: string;
+  $ref?: string;
+  $defs?: Record<string, JSONSchema>;
+  type?: string | string[];
+  properties?: Record<string, JSONSchema>;
+  required?: string[];
+  additionalProperties?: boolean | JSONSchema;
+  items?: JSONSchema;
+  prefixItems?: JSONSchema[];
+  minItems?: number;
+  maxItems?: number;
+  anyOf?: JSONSchema[];
+  allOf?: JSONSchema[];
+  oneOf?: JSONSchema[];
+  const?: unknown;
+  enum?: unknown[];
+  description?: string;
+  default?: unknown;
+  minimum?: number;
+  maximum?: number;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  format?: string;
+  deprecated?: boolean;
+  readOnly?: boolean;
+  examples?: unknown[];
+  title?: string;
+  [key: string]: unknown;
+}
+
+export interface EmitterOptions {
+  /** Include $schema in the root. Default: true */
+  includeSchema?: boolean;
+  /** JSON Schema draft. Default: "https://json-schema.org/draft/2020-12/schema" */
+  schemaVersion?: string;
+  /** Set additionalProperties: false on all objects. Default: false */
+  strictObjects?: boolean;
+  /** Name of the root type to emit. If not set, emits all types under $defs */
+  rootType?: string;
+}
+
+export class Emitter {
+  private declarations = new Map<string, Declaration>();
+  private options: Required<EmitterOptions>;
+
+  constructor(declarations: Declaration[], options: EmitterOptions = {}) {
+    for (const decl of declarations) {
+      this.declarations.set(decl.name, decl);
+    }
+
+    this.options = {
+      includeSchema: options.includeSchema ?? true,
+      schemaVersion: options.schemaVersion ?? "https://json-schema.org/draft/2020-12/schema",
+      strictObjects: options.strictObjects ?? false,
+      rootType: options.rootType ?? "",
+    };
+  }
+
+  emit(): JSONSchema {
+    const defs: Record<string, JSONSchema> = {};
+
+    // Emit all declarations into $defs
+    for (const [name, decl] of this.declarations) {
+      defs[name] = this.emitDeclaration(decl);
+    }
+
+    // If a root type is specified, use it as the root schema
+    if (this.options.rootType && defs[this.options.rootType]) {
+      const root = defs[this.options.rootType];
+      delete defs[this.options.rootType];
+
+      const result: JSONSchema = { ...root };
+      if (this.options.includeSchema) {
+        result.$schema = this.options.schemaVersion;
+      }
+      if (Object.keys(defs).length > 0) {
+        result.$defs = defs;
+      }
+      return result;
+    }
+
+    // Otherwise wrap everything under $defs
+    const result: JSONSchema = {};
+    if (this.options.includeSchema) {
+      result.$schema = this.options.schemaVersion;
+    }
+    result.$defs = defs;
+    return result;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Declaration emission
+  // ---------------------------------------------------------------------------
+
+  private emitDeclaration(decl: Declaration): JSONSchema {
+    switch (decl.kind) {
+      case "interface": return this.emitInterface(decl);
+      case "type_alias": return this.emitTypeAlias(decl);
+      case "enum": return this.emitEnum(decl);
+    }
+  }
+
+  private emitInterface(decl: InterfaceDeclaration): JSONSchema {
+    const schema = this.emitObjectType(decl.properties, decl.indexSignature);
+
+    // Handle extends - merge parent properties via allOf
+    if (decl.extends && decl.extends.length > 0) {
+      const allOf: JSONSchema[] = decl.extends.map(name => ({ $ref: `#/$defs/${name}` }));
+      allOf.push(schema);
+      const result: JSONSchema = { allOf };
+      if (decl.description) result.description = decl.description;
+      return result;
+    }
+
+    if (decl.description) schema.description = decl.description;
+    return schema;
+  }
+
+  private emitTypeAlias(decl: TypeAliasDeclaration): JSONSchema {
+    const schema = this.emitType(decl.type);
+    if (decl.description) schema.description = decl.description;
+    return schema;
+  }
+
+  private emitEnum(decl: EnumDeclaration): JSONSchema {
+    const schema: JSONSchema = {
+      enum: decl.members.map(m => m.value),
+    };
+    if (decl.description) schema.description = decl.description;
+
+    // If all values are strings, add type: "string"
+    if (decl.members.every(m => typeof m.value === "string")) {
+      schema.type = "string";
+    } else if (decl.members.every(m => typeof m.value === "number")) {
+      schema.type = "number";
+    }
+
+    return schema;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Type node emission
+  // ---------------------------------------------------------------------------
+
+  private emitType(node: TypeNode): JSONSchema {
+    switch (node.kind) {
+      case "primitive": return this.emitPrimitive(node.value);
+      case "literal_string": return { const: node.value };
+      case "literal_number": return { const: node.value };
+      case "literal_boolean": return { const: node.value };
+
+      case "object":
+        return this.emitObjectType(node.properties, node.indexSignature);
+
+      case "array":
+        return { type: "array", items: this.emitType(node.element) };
+
+      case "tuple":
+        return this.emitTuple(node);
+
+      case "union":
+        return this.emitUnion(node.members);
+
+      case "intersection":
+        return this.emitIntersection(node.members);
+
+      case "reference":
+        return this.emitReference(node);
+
+      case "parenthesized":
+        return this.emitType(node.inner);
+
+      case "record":
+        return this.emitRecord(node.keyType, node.valueType);
+
+      case "template_literal":
+        return { type: "string" }; // Best we can do without regex generation
+
+      case "mapped":
+        return { type: "object" }; // Fallback
+
+      default:
+        return {};
+    }
+  }
+
+  private emitPrimitive(value: string): JSONSchema {
+    switch (value) {
+      case "string": return { type: "string" };
+      case "number": return { type: "number" };
+      case "boolean": return { type: "boolean" };
+      case "null": return { type: "null" };
+      case "undefined": return {}; // no JSON Schema equivalent
+      case "bigint": return { type: "integer" };
+      case "any": return {}; // accepts anything
+      case "unknown": return {}; // accepts anything
+      case "void": return {}; // no value
+      case "never": return { not: {} }; // matches nothing
+      case "object": return { type: "object" };
+      default: return {};
+    }
+  }
+
+  private emitObjectType(properties: PropertyNode[], indexSignature?: IndexSignatureNode): JSONSchema {
+    const schema: JSONSchema = { type: "object" };
+    const props: Record<string, JSONSchema> = {};
+    const required: string[] = [];
+
+    for (const prop of properties) {
+      const propSchema = this.emitType(prop.type);
+
+      // Apply JSDoc tags
+      if (prop.description) propSchema.description = prop.description;
+      if (prop.readonly) propSchema.readOnly = true;
+      if (prop.tags) this.applyJSDocTags(propSchema, prop.tags);
+
+      props[prop.name] = propSchema;
+      if (!prop.optional) required.push(prop.name);
+    }
+
+    if (Object.keys(props).length > 0) {
+      schema.properties = props;
+    }
+    if (required.length > 0) {
+      schema.required = required;
+    }
+
+    if (indexSignature) {
+      schema.additionalProperties = this.emitType(indexSignature.valueType);
+    } else if (this.options.strictObjects) {
+      schema.additionalProperties = false;
+    }
+
+    return schema;
+  }
+
+  private emitTuple(node: { kind: "tuple"; elements: { type: TypeNode; optional?: boolean; rest?: boolean }[] }): JSONSchema {
+    const schema: JSONSchema = { type: "array" };
+
+    const requiredCount = node.elements.filter(e => !e.optional && !e.rest).length;
+    const hasRest = node.elements.some(e => e.rest);
+
+    if (hasRest) {
+      // Separate fixed elements and rest element
+      const fixed = node.elements.filter(e => !e.rest);
+      const rest = node.elements.find(e => e.rest);
+      schema.prefixItems = fixed.map(e => this.emitType(e.type));
+      schema.minItems = requiredCount;
+      if (rest) {
+        schema.items = this.emitType(rest.type);
+      }
+    } else {
+      schema.prefixItems = node.elements.map(e => this.emitType(e.type));
+      schema.minItems = requiredCount;
+      schema.maxItems = node.elements.length;
+    }
+
+    return schema;
+  }
+
+  private emitUnion(members: TypeNode[]): JSONSchema {
+    // Flatten nested unions
+    const flat = this.flattenUnion(members);
+
+    // Check if all members are string/number literals → use enum
+    const allStringLiterals = flat.every(m => m.kind === "literal_string");
+    if (allStringLiterals) {
+      return {
+        type: "string",
+        enum: flat.map(m => (m as { kind: "literal_string"; value: string }).value),
+      };
+    }
+
+    const allNumberLiterals = flat.every(m => m.kind === "literal_number");
+    if (allNumberLiterals) {
+      return {
+        type: "number",
+        enum: flat.map(m => (m as { kind: "literal_number"; value: number }).value),
+      };
+    }
+
+    // Check for nullable: T | null → make T nullable
+    const nullIndex = flat.findIndex(m => m.kind === "primitive" && m.value === "null");
+    const undefinedIndex = flat.findIndex(m => m.kind === "primitive" && m.value === "undefined");
+    const nonNullMembers = flat.filter(
+      m => !(m.kind === "primitive" && (m.value === "null" || m.value === "undefined"))
+    );
+
+    if ((nullIndex !== -1 || undefinedIndex !== -1) && nonNullMembers.length === 1) {
+      // Simple nullable: string | null
+      const schema = this.emitType(nonNullMembers[0]);
+      if (typeof schema.type === "string") {
+        schema.type = [schema.type, "null"];
+      } else {
+        return { anyOf: [schema, { type: "null" }] };
+      }
+      return schema;
+    }
+
+    // General union → anyOf
+    const schemas = flat.map(m => this.emitType(m));
+    return { anyOf: schemas };
+  }
+
+  private flattenUnion(members: TypeNode[]): TypeNode[] {
+    const result: TypeNode[] = [];
+    for (const m of members) {
+      if (m.kind === "union") {
+        result.push(...this.flattenUnion(m.members));
+      } else {
+        result.push(m);
+      }
+    }
+    return result;
+  }
+
+  private emitIntersection(members: TypeNode[]): JSONSchema {
+    // If all members are objects, try to merge them
+    const schemas = members.map(m => this.emitType(m));
+    if (schemas.length === 1) return schemas[0];
+    return { allOf: schemas };
+  }
+
+  private emitReference(node: { kind: "reference"; name: string; typeArgs?: TypeNode[] }): JSONSchema {
+    // Handle well-known utility types
+    if (node.typeArgs && node.typeArgs.length > 0) {
+      const resolved = this.resolveUtilityType(node.name, node.typeArgs);
+      if (resolved) return resolved;
+    }
+
+    // If the declaration exists and is simple, we could inline it,
+    // but using $ref is more correct and handles circular refs
+    return { $ref: `#/$defs/${node.name}` };
+  }
+
+  private emitRecord(keyType: TypeNode, valueType: TypeNode): JSONSchema {
+    const schema: JSONSchema = { type: "object" };
+
+    // If key is a union of string literals, emit explicit properties
+    if (keyType.kind === "union") {
+      const allStringLiterals = keyType.members.every(m => m.kind === "literal_string");
+      if (allStringLiterals) {
+        const valueSchema = this.emitType(valueType);
+        schema.properties = {};
+        schema.required = [];
+        for (const m of keyType.members) {
+          const key = (m as { kind: "literal_string"; value: string }).value;
+          schema.properties[key] = { ...valueSchema };
+          schema.required.push(key);
+        }
+        return schema;
+      }
+    }
+
+    if (keyType.kind === "literal_string") {
+      const valueSchema = this.emitType(valueType);
+      schema.properties = { [keyType.value]: valueSchema };
+      schema.required = [keyType.value];
+      return schema;
+    }
+
+    // General Record<string, V>
+    schema.additionalProperties = this.emitType(valueType);
+    return schema;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Utility type resolution
+  // ---------------------------------------------------------------------------
+
+  private resolveUtilityType(name: string, typeArgs: TypeNode[]): JSONSchema | null {
+    switch (name) {
+      case "Partial":
+        return this.resolvePartial(typeArgs[0]);
+      case "Required":
+        return this.resolveRequired(typeArgs[0]);
+      case "Pick":
+        if (typeArgs.length === 2) return this.resolvePick(typeArgs[0], typeArgs[1]);
+        return null;
+      case "Omit":
+        if (typeArgs.length === 2) return this.resolveOmit(typeArgs[0], typeArgs[1]);
+        return null;
+      case "Readonly":
+        return this.emitType(typeArgs[0]); // Schema doesn't enforce readonly
+      case "NonNullable":
+        return this.emitType(typeArgs[0]); // Already non-null in JSON
+      case "Set":
+        return { type: "array", items: this.emitType(typeArgs[0]), uniqueItems: true };
+      case "Map":
+        if (typeArgs.length === 2) {
+          return { type: "object", additionalProperties: this.emitType(typeArgs[1]) };
+        }
+        return null;
+      default:
+        return null;
+    }
+  }
+
+  private resolvePartial(target: TypeNode): JSONSchema {
+    // For references, look up the declaration and make all properties optional
+    if (target.kind === "reference") {
+      const decl = this.declarations.get(target.name);
+      if (decl && (decl.kind === "interface" || (decl.kind === "type_alias" && decl.type.kind === "object"))) {
+        const props = decl.kind === "interface" ? decl.properties : (decl.type as any).properties;
+        const schema = this.emitObjectType(
+          props.map((p: PropertyNode) => ({ ...p, optional: true }))
+        );
+        return schema;
+      }
+    }
+
+    // For inline objects
+    if (target.kind === "object") {
+      return this.emitObjectType(
+        target.properties.map(p => ({ ...p, optional: true }))
+      );
+    }
+
+    // Fallback: emit as-is
+    return this.emitType(target);
+  }
+
+  private resolveRequired(target: TypeNode): JSONSchema {
+    if (target.kind === "reference") {
+      const decl = this.declarations.get(target.name);
+      if (decl && (decl.kind === "interface" || (decl.kind === "type_alias" && decl.type.kind === "object"))) {
+        const props = decl.kind === "interface" ? decl.properties : (decl.type as any).properties;
+        return this.emitObjectType(
+          props.map((p: PropertyNode) => ({ ...p, optional: false }))
+        );
+      }
+    }
+
+    if (target.kind === "object") {
+      return this.emitObjectType(
+        target.properties.map(p => ({ ...p, optional: false }))
+      );
+    }
+
+    return this.emitType(target);
+  }
+
+  private resolvePick(target: TypeNode, keys: TypeNode): JSONSchema {
+    const keyNames = this.extractKeyNames(keys);
+    if (!keyNames) return this.emitType(target);
+
+    const props = this.getProperties(target);
+    if (!props) return this.emitType(target);
+
+    return this.emitObjectType(
+      props.filter(p => keyNames.has(p.name))
+    );
+  }
+
+  private resolveOmit(target: TypeNode, keys: TypeNode): JSONSchema {
+    const keyNames = this.extractKeyNames(keys);
+    if (!keyNames) return this.emitType(target);
+
+    const props = this.getProperties(target);
+    if (!props) return this.emitType(target);
+
+    return this.emitObjectType(
+      props.filter(p => !keyNames.has(p.name))
+    );
+  }
+
+  private extractKeyNames(node: TypeNode): Set<string> | null {
+    if (node.kind === "literal_string") return new Set([node.value]);
+    if (node.kind === "union") {
+      const names = new Set<string>();
+      for (const m of node.members) {
+        if (m.kind === "literal_string") names.add(m.value);
+        else return null;
+      }
+      return names;
+    }
+    return null;
+  }
+
+  private getProperties(node: TypeNode): PropertyNode[] | null {
+    if (node.kind === "object") return node.properties;
+    if (node.kind === "reference") {
+      const decl = this.declarations.get(node.name);
+      if (!decl) return null;
+      if (decl.kind === "interface") return decl.properties;
+      if (decl.kind === "type_alias" && decl.type.kind === "object") return decl.type.properties;
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // JSDoc tag application
+  // ---------------------------------------------------------------------------
+
+  private applyJSDocTags(schema: JSONSchema, tags: Record<string, string>): void {
+    for (const [key, value] of Object.entries(tags)) {
+      switch (key) {
+        case "minimum": schema.minimum = Number(value); break;
+        case "maximum": schema.maximum = Number(value); break;
+        case "minLength": schema.minLength = Number(value); break;
+        case "maxLength": schema.maxLength = Number(value); break;
+        case "pattern": schema.pattern = value; break;
+        case "format": schema.format = value; break;
+        case "default":
+          try { schema.default = JSON.parse(value); }
+          catch { schema.default = value; }
+          break;
+        case "example":
+        case "examples":
+          try {
+            if (!schema.examples) schema.examples = [];
+            schema.examples.push(JSON.parse(value));
+          } catch {
+            if (!schema.examples) schema.examples = [];
+            schema.examples.push(value);
+          }
+          break;
+        case "deprecated": schema.deprecated = true; break;
+        case "title": schema.title = value; break;
+      }
+    }
+  }
+}
