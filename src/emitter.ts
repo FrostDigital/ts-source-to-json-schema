@@ -48,6 +48,8 @@ export interface EmitterOptions {
   strictObjects?: boolean;
   /** Name of the root type to emit. If not set, emits all types under $defs */
   rootType?: string;
+  /** Include JSDoc descriptions and tags in the schema. Default: true */
+  includeJSDoc?: boolean;
 }
 
 export class Emitter {
@@ -64,6 +66,7 @@ export class Emitter {
       schemaVersion: options.schemaVersion ?? "https://json-schema.org/draft/2020-12/schema",
       strictObjects: options.strictObjects ?? false,
       rootType: options.rootType ?? "",
+      includeJSDoc: options.includeJSDoc ?? true,
     };
   }
 
@@ -119,17 +122,17 @@ export class Emitter {
       const allOf: JSONSchema[] = decl.extends.map(name => ({ $ref: `#/$defs/${name}` }));
       allOf.push(schema);
       const result: JSONSchema = { allOf };
-      if (decl.description) result.description = decl.description;
+      if (this.options.includeJSDoc && decl.description) result.description = decl.description;
       return result;
     }
 
-    if (decl.description) schema.description = decl.description;
+    if (this.options.includeJSDoc && decl.description) schema.description = decl.description;
     return schema;
   }
 
   private emitTypeAlias(decl: TypeAliasDeclaration): JSONSchema {
     const schema = this.emitType(decl.type);
-    if (decl.description) schema.description = decl.description;
+    if (this.options.includeJSDoc && decl.description) schema.description = decl.description;
     return schema;
   }
 
@@ -137,7 +140,7 @@ export class Emitter {
     const schema: JSONSchema = {
       enum: decl.members.map(m => m.value),
     };
-    if (decl.description) schema.description = decl.description;
+    if (this.options.includeJSDoc && decl.description) schema.description = decl.description;
 
     // If all values are strings, add type: "string"
     if (decl.members.every(m => typeof m.value === "string")) {
@@ -221,9 +224,11 @@ export class Emitter {
       const propSchema = this.emitType(prop.type);
 
       // Apply JSDoc tags
-      if (prop.description) propSchema.description = prop.description;
+      if (this.options.includeJSDoc) {
+        if (prop.description) propSchema.description = prop.description;
+        if (prop.tags) this.applyJSDocTags(propSchema, prop.tags);
+      }
       if (prop.readonly) propSchema.readOnly = true;
-      if (prop.tags) this.applyJSDocTags(propSchema, prop.tags);
 
       props[prop.name] = propSchema;
       if (!prop.optional) required.push(prop.name);

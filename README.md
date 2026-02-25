@@ -110,7 +110,37 @@ toJsonSchema(source, {
   includeSchema: true,      // Include $schema field (default: true)
   strictObjects: false,     // Set additionalProperties: false on all objects
   schemaVersion: "https://json-schema.org/draft/2020-12/schema",
+  includeJSDoc: true,       // Include JSDoc descriptions and tags (default: true)
 });
+```
+
+### `includeJSDoc` (optional)
+- **Type:** `boolean`
+- **Default:** `true`
+- **Description:** Controls whether JSDoc comments are processed and included in the schema
+
+When `true` (default):
+- Interface/type descriptions are extracted from JSDoc comments
+- Property descriptions are included
+- JSDoc tags like `@minimum`, `@maximum`, `@pattern` are applied as constraints
+
+When `false`:
+- All JSDoc comments are ignored
+- Schema only contains structural information (types, properties, required fields)
+- Useful for generating minimal schemas or when descriptions aren't needed
+
+**Example:**
+```typescript
+const schema = toJsonSchema(`
+  /** User profile */
+  interface User {
+    /** @minLength 1 */
+    name: string;
+  }
+`, { rootType: 'User', includeJSDoc: false });
+
+// Result: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] }
+// No description or minLength constraint
 ```
 
 ## What it doesn't handle
