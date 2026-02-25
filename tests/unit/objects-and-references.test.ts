@@ -87,13 +87,18 @@ describe('Objects and References', () => {
         }
       `, { rootType: 'Task', includeSchema: false });
 
-      expect(schema.properties?.subtasks).toEqual({
+      // Recursive types are now correctly handled by making root a $ref
+      expect(schema.$ref).toBe('#/$defs/Task');
+      expect(schema.$defs?.Task).toBeDefined();
+
+      // Verify the Task definition is correct
+      const taskDef = schema.$defs?.Task;
+      expect(taskDef?.type).toBe('object');
+      expect(taskDef?.properties?.title).toEqual({ type: 'string' });
+      expect(taskDef?.properties?.subtasks).toEqual({
         type: 'array',
         items: { $ref: '#/$defs/Task' },
       });
-      // Self-reference creates a $ref but not a separate $defs entry (it refers to the root)
-      expect(schema.type).toBe('object');
-      expect(schema.properties?.title).toBeDefined();
     });
   });
 

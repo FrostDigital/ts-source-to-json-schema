@@ -105,12 +105,17 @@ describe('Complex Real-World Scenarios', () => {
         }
       `, { rootType: 'Node', includeSchema: false });
 
-      expect(schema.properties?.id.readOnly).toBe(true);
-      expect(schema.properties?.children).toEqual({
+      // Node is recursive, so root should be a $ref
+      expect(schema.$ref).toBe('#/$defs/Node');
+      expect(schema.$defs?.Node).toBeDefined();
+
+      const nodeDef = schema.$defs?.Node;
+      expect(nodeDef?.properties?.id.readOnly).toBe(true);
+      expect(nodeDef?.properties?.children).toEqual({
         type: 'array',
         items: { $ref: '#/$defs/Node' },
       });
-      expect(schema.properties?.tags).toEqual({
+      expect(nodeDef?.properties?.tags).toEqual({
         type: 'array',
         items: {
           type: 'array',

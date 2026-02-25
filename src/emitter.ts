@@ -90,6 +90,23 @@ export class Emitter {
     // If a root type is specified, use it as the root schema
     if (this.options.rootType && defs[this.options.rootType]) {
       const root = defs[this.options.rootType];
+
+      // Check if root type is self-referential (directly or transitively)
+      const isSelfReferential = this.isTransitivelySelfReferential(this.options.rootType, defs);
+
+      if (isSelfReferential) {
+        // Keep root in $defs and make root a $ref to it
+        const result: JSONSchema = {
+          $ref: `#/$defs/${this.options.rootType}`,
+        };
+        if (this.options.includeSchema) {
+          result.$schema = this.options.schemaVersion;
+        }
+        result.$defs = defs;
+        return result;
+      }
+
+      // Not self-referential, emit normally
       delete defs[this.options.rootType];
 
       const result: JSONSchema = { ...root };
@@ -315,6 +332,120 @@ export class Emitter {
     }
 
     return converted;
+  }
+
+  /**
+   * Checks if a schema contains a reference to a specific type name.
+   * Used to detect self-referential types.
+   */
+  private containsReference(schema: JSONSchema, typeName: string): boolean {
+    if (typeof schema !== "object" || schema === null) {
+      return false;
+    }
+
+    // Check if this is a direct reference to the type
+    if (schema.$ref === `#/$defs/${typeName}`) {
+      return true;
+    }
+
+    // Recursively check all properties
+    for (const value of Object.values(schema)) {
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          if (typeof item === "object" && this.containsReference(item, typeName)) {
+            return true;
+          }
+        }
+      } else if (typeof value === "object" && value !== null) {
+        if (this.containsReference(value as JSONSchema, typeName)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Checks if a type is transitively self-referential.
+   * This includes both direct recursion (A → A) and mutual recursion (A → B → A).
+   */
+  private isTransitivelySelfReferential(
+    typeName: string,
+    defs: Record<string, JSONSchema>
+  ): boolean {
+    // Helper to check if typeName is reachable from startType
+    const canReach = (startType: string, targetType: string, visited: Set<string> = new Set()): boolean => {
+      if (startType === targetType) {
+        return true;
+      }
+
+      if (visited.has(startType)) {
+        return false;
+      }
+
+      visited.add(startType);
+
+      const schema = defs[startType];
+      if (!schema) {
+        return false;
+      }
+
+      // Get all types referenced by startType
+      const refs = this.getReferencedTypes(schema);
+
+      for (const ref of refs) {
+        if (ref === targetType) {
+          return true;
+        }
+        if (canReach(ref, targetType, visited)) {
+          return true;
+        }
+      }
+
+      return false;
+    };
+
+    // Check if typeName can reach itself (directly or transitively)
+    const refs = this.getReferencedTypes(defs[typeName]);
+    for (const ref of refs) {
+      if (canReach(ref, typeName)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Extracts all type names referenced in a schema.
+   */
+  private getReferencedTypes(schema: JSONSchema): string[] {
+    const refs: string[] = [];
+
+    const collectRefs = (obj: any) => {
+      if (typeof obj !== "object" || obj === null) {
+        return;
+      }
+
+      if (obj.$ref && typeof obj.$ref === "string") {
+        const match = obj.$ref.match(/^#\/\$defs\/(.+)$/);
+        if (match) {
+          refs.push(match[1]);
+        }
+      }
+
+      for (const value of Object.values(obj)) {
+        if (Array.isArray(value)) {
+          value.forEach(collectRefs);
+        } else if (typeof value === "object" && value !== null) {
+          collectRefs(value);
+        }
+      }
+    };
+
+    collectRefs(schema);
+    return refs;
   }
 
   // ---------------------------------------------------------------------------
