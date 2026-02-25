@@ -51,7 +51,7 @@ export type Declaration =
 export interface InterfaceDeclaration {
   kind: "interface";
   name: string;
-  extends?: string[];
+  extends?: TypeNode[];
   properties: PropertyNode[];
   indexSignature?: IndexSignatureNode;
   description?: string;

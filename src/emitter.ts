@@ -122,8 +122,28 @@ export class Emitter {
 
     // Handle extends - merge parent properties via allOf
     if (decl.extends && decl.extends.length > 0) {
-      const allOf: JSONSchema[] = decl.extends.map(name => ({ $ref: `#/$defs/${name}` }));
-      allOf.push(schema);
+      const allOf: JSONSchema[] = decl.extends.map((typeNode) => {
+        // If it's a simple reference, use $ref
+        if (typeNode.kind === "reference" && !typeNode.typeArgs) {
+          return { $ref: `#/$defs/${typeNode.name}` };
+        }
+        // If it's a utility type or complex type, resolve it inline
+        return this.emitType(typeNode);
+      });
+
+      // Only add the interface's own properties if it has any
+      const hasOwnProperties = decl.properties.length > 0 || decl.indexSignature !== undefined;
+      if (hasOwnProperties) {
+        allOf.push(schema);
+      }
+
+      // If only one schema in allOf, unwrap it
+      if (allOf.length === 1) {
+        const result = allOf[0];
+        if (this.options.includeJSDoc && decl.description) result.description = decl.description;
+        return result;
+      }
+
       const result: JSONSchema = { allOf };
       if (this.options.includeJSDoc && decl.description) result.description = decl.description;
       return result;

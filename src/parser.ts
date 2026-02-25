@@ -150,11 +150,11 @@ export class Parser {
     const name = this.expect("identifier").value;
 
     // extends clause
-    let extendsNames: string[] | undefined;
+    let extendsTypes: TypeNode[] | undefined;
     if (this.match("keyword", "extends")) {
-      extendsNames = [this.expect("identifier").value];
+      extendsTypes = [this.parseType()];
       while (this.match("punctuation", ",")) {
-        extendsNames.push(this.expect("identifier").value);
+        extendsTypes.push(this.parseType());
       }
     }
 
@@ -163,7 +163,7 @@ export class Parser {
     return {
       kind: "interface",
       name,
-      extends: extendsNames,
+      extends: extendsTypes,
       properties,
       indexSignature,
       description: jsdoc?.description,
