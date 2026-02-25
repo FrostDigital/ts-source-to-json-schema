@@ -6,7 +6,7 @@ It parses TypeScript type declarations (interfaces, type aliases, enums) directl
 
 ## Why
 
-Existing tools like `ts-json-schema-generator` and `typescript-json-schema` rely on the full TypeScript compiler API to resolve types. That works, but it's slow, heavy, and ties you to Node.js.
+Existing tools like `ts-json-schema-generator` and `typescript-json-schema` rely on the full TypeScript compiler API to resolve types. That works, but it's slow, heavy, and ties you to Node.js. Furthermore, these libraries might need significant rewrites when TypeScript 7 (tsgo) is released, making their long-term future uncertain.
 
 This library takes a different approach: instead of running the type checker, it tokenizes and parses a **practical subset** of TypeScript's type syntax directly. The result is a tool that's fast enough to run in a hot path, portable enough to run anywhere (Cloudflare Workers, browser, CLI), and simple enough to extend.
 
