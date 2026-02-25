@@ -392,6 +392,11 @@ export class Emitter {
   }
 
   private emitReference(node: { kind: "reference"; name: string; typeArgs?: TypeNode[] }): JSONSchema {
+    // Handle built-in Date type
+    if (node.name === "Date" && !node.typeArgs) {
+      return { type: "string", format: "date-time" };
+    }
+
     // Handle well-known utility types
     if (node.typeArgs && node.typeArgs.length > 0) {
       const resolved = this.resolveUtilityType(node.name, node.typeArgs);

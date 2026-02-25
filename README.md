@@ -16,6 +16,7 @@ The trade-off is explicit: it handles the type constructs you'd actually use in 
 
 - **Declarations**: `interface`, `type`, `enum` (string + numeric), `export`
 - **Primitives**: `string`, `number`, `boolean`, `null`, `undefined`, `any`, `unknown`, `never`, `void`, `bigint`
+- **Built-in types**: `Date` → `{ type: "string", format: "date-time" }`
 - **Literal types**: `"active"`, `42`, `true`
 - **Unions**: `A | B | C` → `anyOf` (or `enum` when all members are literals)
 - **Intersections**: `A & B` → `allOf`
