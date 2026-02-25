@@ -172,11 +172,18 @@ export class Emitter {
       convertedDefinitions[name] = this.convertRefsToDefinitions(def);
     }
 
-    // Return standalone schema
-    return {
+    // Build result schema with $schema if enabled
+    const result: JSONSchema = {
       ...schemaWithDefinitions,
       definitions: Object.keys(convertedDefinitions).length > 0 ? convertedDefinitions : {}
     };
+
+    // Add $schema if enabled (default: true)
+    if (this.options.includeSchema !== false) {
+      result.$schema = this.options.schemaVersion || "https://json-schema.org/draft/2020-12/schema";
+    }
+
+    return result;
   }
 
   /**

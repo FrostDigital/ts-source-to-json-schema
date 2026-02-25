@@ -22,6 +22,7 @@ describe('toJsonSchemas - batch generation', () => {
 
     // User schema should be standalone
     expect(schemas.User).toEqual({
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
       type: 'object',
       properties: {
         id: { type: 'string' },
@@ -33,6 +34,7 @@ describe('toJsonSchemas - batch generation', () => {
 
     // Post schema should include User in definitions
     expect(schemas.Post).toEqual({
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
       type: 'object',
       properties: {
         id: { type: 'string' },
@@ -312,11 +314,13 @@ describe('toJsonSchemas - batch generation', () => {
     const schemas = toJsonSchemas(source);
 
     expect(schemas.UserID).toEqual({
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
       type: 'string',
       definitions: {}
     });
 
     expect(schemas.Age).toEqual({
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
       type: 'number',
       definitions: {}
     });
@@ -505,5 +509,43 @@ describe('toJsonSchemas - batch generation', () => {
     expect(schemas.StringMap.additionalProperties).toEqual({ type: 'string' });
     expect(schemas.UserMap.additionalProperties).toEqual({ $ref: '#/definitions/User' });
     expect(schemas.UserMap.definitions.User).toBeDefined();
+  });
+
+  it('should include $schema field by default', () => {
+    const source = `
+      export interface User {
+        id: string;
+      }
+    `;
+
+    const schemas = toJsonSchemas(source);
+
+    expect(schemas.User.$schema).toBe('https://json-schema.org/draft/2020-12/schema');
+  });
+
+  it('should allow disabling $schema field', () => {
+    const source = `
+      export interface User {
+        id: string;
+      }
+    `;
+
+    const schemas = toJsonSchemas(source, { includeSchema: false });
+
+    expect(schemas.User.$schema).toBeUndefined();
+  });
+
+  it('should support custom schema version', () => {
+    const source = `
+      export interface User {
+        id: string;
+      }
+    `;
+
+    const schemas = toJsonSchemas(source, {
+      schemaVersion: 'http://json-schema.org/draft-07/schema#'
+    });
+
+    expect(schemas.User.$schema).toBe('http://json-schema.org/draft-07/schema#');
   });
 });

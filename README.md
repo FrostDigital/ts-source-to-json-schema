@@ -260,6 +260,7 @@ console.log(schemas.Comment); // Standalone Comment schema
 - **Performance**: ~70% faster when generating 30+ schemas from the same source
 - **Single parse**: Source is tokenized and parsed only once
 - **Standalone schemas**: Each schema includes only the types it references in its `definitions` field
+- **Self-contained**: Each schema includes `$schema` field by default for better IDE validation
 - **Draft-07 compatible**: Uses `definitions` instead of `$defs` for broader compatibility
 
 **How it works:**
@@ -366,6 +367,52 @@ const schema = toJsonSchema(`
 // Result: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] }
 // No description or minLength constraint
 ```
+
+### `includeSchema` (optional)
+- **Type:** `boolean`
+- **Default:** `true`
+- **Description:** Controls whether the `$schema` field is included in generated schemas
+
+When `true` (default):
+- Each generated schema includes a `$schema` field pointing to the JSON Schema specification
+- Makes schemas self-contained and improves IDE validation support
+- Uses the URL from `schemaVersion` option (default: `https://json-schema.org/draft/2020-12/schema`)
+
+When `false`:
+- The `$schema` field is omitted from all generated schemas
+- Useful when embedding schemas in larger documents or when the schema version is managed elsewhere
+
+**Example:**
+```typescript
+const schema = toJsonSchema(`
+  interface User {
+    name: string;
+  }
+`, { rootType: 'User', includeSchema: true });
+
+// Result includes: { "$schema": "https://json-schema.org/draft/2020-12/schema", type: 'object', ... }
+```
+
+**Batch generation:** The `toJsonSchemas()` function also respects this option and includes `$schema` in each generated schema by default.
+
+### `schemaVersion` (optional)
+- **Type:** `string`
+- **Default:** `"https://json-schema.org/draft/2020-12/schema"`
+- **Description:** Specifies the JSON Schema draft version URL
+
+Use this to generate schemas compatible with different JSON Schema drafts:
+
+```typescript
+// Generate draft-07 compatible schema
+const schema = toJsonSchema(`interface User { name: string; }`, {
+  rootType: 'User',
+  schemaVersion: 'http://json-schema.org/draft-07/schema#'
+});
+
+// Result includes: { "$schema": "http://json-schema.org/draft-07/schema#", ... }
+```
+
+**Note:** This library always generates draft-2020-12 compatible schemas. The `schemaVersion` option only changes the `$schema` field value. For maximum compatibility with draft-07 validators, use `toJsonSchemas()` which uses `definitions` instead of `$defs`.
 
 ### `additionalProperties` (optional)
 - **Type:** `boolean | undefined`
