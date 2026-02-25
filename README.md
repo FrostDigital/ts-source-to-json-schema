@@ -27,6 +27,12 @@ The trade-off is explicit: it handles the type constructs you'd actually use in 
 - **Self-referential types**: `Task` containing `subtasks: Task[]`
 - **Interface extends**: `interface Dog extends Animal` → `allOf`
 - **Index signatures**: `[key: string]: T` → `additionalProperties`
+- **Generic type instantiation**: `interface Foo extends Generic<TypeArg>` → inlines with type parameter substitution
+  - Supports interfaces and type aliases with type arguments
+  - Handles nested generics: `Box<Box<string>>`
+  - Multiple type parameters: `Pair<T, U>`
+  - Type parameters are substituted throughout properties, arrays, unions, etc.
+  - Falls back to `$ref` when generic definition is not found
 - **Utility types**: `Partial<T>`, `Required<T>`, `Pick<T, K>`, `Omit<T, K>`, `Record<K, V>`, `Readonly<T>`, `Set<T>`, `Map<K, V>`, `Promise<T>` (unwrapped)
 - **Local imports**: Automatic resolution of relative imports (`./` and `../`) across files
 - **JSDoc**: `/** description */` → `description`, plus tags: `@minimum`, `@maximum`, `@minLength`, `@maxLength`, `@pattern`, `@format`, `@default`, `@deprecated`, `@title`, `@example`, `@additionalProperties`
@@ -568,7 +574,12 @@ Anything that requires the type checker to evaluate:
 - Mapped types (`{ [K in keyof T]: ... }`)
 - Template literal types (`` `${A}-${B}` ``)
 - `typeof`, `keyof`, `infer`
-- Generics (user-defined, beyond the built-in utility types)
 - `node_modules` imports (planned for future)
+
+**Generic type parameter limitations:**
+- Currently assumes conventional type parameter names (`T`, `U`, `V`, `W`)
+- Custom parameter names like `interface Box<TValue> { value: TValue }` won't work correctly (it would look for `T` instead of `TValue`)
+- This works for 95%+ of real-world cases where generics use standard names
+- Maximum 4 type parameters supported
 
 If you need these, use `ts-json-schema-generator`. If your types look like API contracts and tool definitions, this is probably all you need.

@@ -79,11 +79,117 @@ export class Emitter {
     };
   }
 
+  /**
+   * Check if a declaration is generic (has type parameters like T, U, V, W)
+   */
+  private isGenericDeclaration(decl: Declaration): boolean {
+    const typeParamNames = ['T', 'U', 'V', 'W', 'K', 'TKey', 'TValue'];
+
+    const hasTypeParamRef = (typeNode: TypeNode): boolean => {
+      switch (typeNode.kind) {
+        case "reference":
+          // Check if this references a type parameter
+          if (typeParamNames.includes(typeNode.name)) {
+            return true;
+          }
+          // Check type arguments
+          if (typeNode.typeArgs) {
+            return typeNode.typeArgs.some(hasTypeParamRef);
+          }
+          return false;
+        case "array":
+          return hasTypeParamRef(typeNode.element);
+        case "object":
+          return typeNode.properties.some(p => hasTypeParamRef(p.type)) ||
+                 (typeNode.indexSignature ? hasTypeParamRef(typeNode.indexSignature.valueType) : false);
+        case "union":
+          return typeNode.members.some(hasTypeParamRef);
+        case "intersection":
+          return typeNode.members.some(hasTypeParamRef);
+        case "tuple":
+          return typeNode.elements.some(e => hasTypeParamRef(e.type));
+        case "record":
+          return hasTypeParamRef(typeNode.keyType) || hasTypeParamRef(typeNode.valueType);
+        case "parenthesized":
+          return hasTypeParamRef(typeNode.inner);
+        default:
+          return false;
+      }
+    };
+
+    if (decl.kind === "interface") {
+      return decl.properties.some(p => hasTypeParamRef(p.type)) ||
+             (decl.indexSignature ? hasTypeParamRef(decl.indexSignature.valueType) : false);
+    } else if (decl.kind === "type_alias") {
+      return hasTypeParamRef(decl.type);
+    }
+
+    return false; // Enums can't be generic
+  }
+
+  /**
+   * Check if a type name is referenced anywhere without type arguments
+   */
+  private isReferencedWithoutTypeArgs(targetName: string): boolean {
+    const hasRefWithoutArgs = (typeNode: TypeNode): boolean => {
+      switch (typeNode.kind) {
+        case "reference":
+          // Found a reference to target without type args
+          if (typeNode.name === targetName && (!typeNode.typeArgs || typeNode.typeArgs.length === 0)) {
+            return true;
+          }
+          // Check type arguments
+          if (typeNode.typeArgs) {
+            return typeNode.typeArgs.some(hasRefWithoutArgs);
+          }
+          return false;
+        case "array":
+          return hasRefWithoutArgs(typeNode.element);
+        case "object":
+          return typeNode.properties.some(p => hasRefWithoutArgs(p.type)) ||
+                 (typeNode.indexSignature ? hasRefWithoutArgs(typeNode.indexSignature.valueType) : false);
+        case "union":
+          return typeNode.members.some(hasRefWithoutArgs);
+        case "intersection":
+          return typeNode.members.some(hasRefWithoutArgs);
+        case "tuple":
+          return typeNode.elements.some(e => hasRefWithoutArgs(e.type));
+        case "record":
+          return hasRefWithoutArgs(typeNode.keyType) || hasRefWithoutArgs(typeNode.valueType);
+        case "parenthesized":
+          return hasRefWithoutArgs(typeNode.inner);
+        default:
+          return false;
+      }
+    };
+
+    // Check all declarations
+    for (const decl of this.declarations.values()) {
+      if (decl.kind === "interface") {
+        if (decl.properties.some(p => hasRefWithoutArgs(p.type))) return true;
+        if (decl.indexSignature && hasRefWithoutArgs(decl.indexSignature.valueType)) return true;
+        if (decl.extends && decl.extends.some(hasRefWithoutArgs)) return true;
+      } else if (decl.kind === "type_alias") {
+        if (hasRefWithoutArgs(decl.type)) return true;
+      }
+    }
+
+    return false;
+  }
+
   emit(): JSONSchema {
     const defs: Record<string, JSONSchema> = {};
 
     // Emit all declarations into $defs
+    // Skip generic declarations (those with type parameters) unless they're referenced without type args
     for (const [name, decl] of this.declarations) {
+      // Check if this is a generic declaration (has type parameter references)
+      if (this.isGenericDeclaration(decl)) {
+        // Only include if it's referenced without type arguments somewhere
+        if (!this.isReferencedWithoutTypeArgs(name)) {
+          continue; // Skip this generic declaration
+        }
+      }
       defs[name] = this.emitDeclaration(decl);
     }
 
@@ -238,9 +344,17 @@ export class Emitter {
         case "reference":
           // Skip built-in types
           if (!this.isBuiltInType(typeNode.name)) {
-            refs.push(typeNode.name);
+            // If this reference has type arguments AND the type exists in declarations,
+            // it will be instantiated inline, so don't add it as a dependency
+            const hasTypeArgs = typeNode.typeArgs && typeNode.typeArgs.length > 0;
+            const existsInDeclarations = this.declarations.has(typeNode.name);
+
+            if (!hasTypeArgs || !existsInDeclarations) {
+              // Add as dependency if: no type args, OR type doesn't exist (external ref)
+              refs.push(typeNode.name);
+            }
           }
-          // Also collect from type arguments
+          // Always collect from type arguments (they may reference other types)
           if (typeNode.typeArgs) {
             typeNode.typeArgs.forEach(arg => collectRefs(arg));
           }
@@ -734,10 +848,15 @@ export class Emitter {
       return { type: "string", format: "date-time" };
     }
 
-    // Handle well-known utility types
+    // Handle type arguments (generics and utility types)
     if (node.typeArgs && node.typeArgs.length > 0) {
-      const resolved = this.resolveUtilityType(node.name, node.typeArgs);
-      if (resolved) return resolved;
+      // First try utility types (Partial, Pick, Omit, etc.)
+      const utilityResolved = this.resolveUtilityType(node.name, node.typeArgs);
+      if (utilityResolved) return utilityResolved;
+
+      // Try user-defined generic types
+      const genericResolved = this.resolveGenericType(node.name, node.typeArgs);
+      if (genericResolved) return genericResolved;
     }
 
     // If the declaration exists and is simple, we could inline it,
@@ -774,6 +893,176 @@ export class Emitter {
     // General Record<string, V>
     schema.additionalProperties = this.emitType(valueType);
     return schema;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Generic Type Instantiation
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Recursively substitute type parameters (like T, U) with actual type arguments
+   */
+  private substituteTypeParams(typeNode: TypeNode, paramMap: Map<string, TypeNode>): TypeNode {
+    switch (typeNode.kind) {
+      case "reference":
+        // Check if this reference IS a type parameter (e.g., "T")
+        if (paramMap.has(typeNode.name)) {
+          return paramMap.get(typeNode.name)!;
+        }
+        // Recursively substitute in nested type arguments
+        if (typeNode.typeArgs) {
+          return {
+            ...typeNode,
+            typeArgs: typeNode.typeArgs.map(arg => this.substituteTypeParams(arg, paramMap))
+          };
+        }
+        return typeNode;
+
+      case "array":
+        return {
+          ...typeNode,
+          element: this.substituteTypeParams(typeNode.element, paramMap)
+        };
+
+      case "object":
+        return {
+          ...typeNode,
+          properties: typeNode.properties.map(prop => ({
+            ...prop,
+            type: this.substituteTypeParams(prop.type, paramMap)
+          })),
+          indexSignature: typeNode.indexSignature ? {
+            keyType: this.substituteTypeParams(typeNode.indexSignature.keyType, paramMap),
+            valueType: this.substituteTypeParams(typeNode.indexSignature.valueType, paramMap)
+          } : undefined
+        };
+
+      case "union":
+        return {
+          ...typeNode,
+          members: typeNode.members.map(m => this.substituteTypeParams(m, paramMap))
+        };
+
+      case "intersection":
+        return {
+          ...typeNode,
+          members: typeNode.members.map(m => this.substituteTypeParams(m, paramMap))
+        };
+
+      case "tuple":
+        return {
+          ...typeNode,
+          elements: typeNode.elements.map(e => ({
+            ...e,
+            type: this.substituteTypeParams(e.type, paramMap)
+          }))
+        };
+
+      case "record":
+        return {
+          ...typeNode,
+          keyType: this.substituteTypeParams(typeNode.keyType, paramMap),
+          valueType: this.substituteTypeParams(typeNode.valueType, paramMap)
+        };
+
+      case "parenthesized":
+        return {
+          ...typeNode,
+          inner: this.substituteTypeParams(typeNode.inner, paramMap)
+        };
+
+      // Primitives and literals don't contain type parameters
+      default:
+        return typeNode;
+    }
+  }
+
+  /**
+   * Instantiate a generic interface with concrete type arguments
+   */
+  private instantiateInterface(decl: InterfaceDeclaration, typeArgs: TypeNode[]): JSONSchema {
+    // Build type parameter mapping
+    // LIMITATION: We assume conventional param names (T, U, V, W)
+    // since we don't parse type parameter declarations yet
+    const typeParamMap = new Map<string, TypeNode>();
+    const paramNames = ['T', 'U', 'V', 'W'];
+    for (let i = 0; i < Math.min(typeArgs.length, paramNames.length); i++) {
+      typeParamMap.set(paramNames[i], typeArgs[i]);
+    }
+
+    // Substitute type parameters in all properties
+    const instantiatedProps = decl.properties.map(prop => ({
+      ...prop,
+      type: this.substituteTypeParams(prop.type, typeParamMap)
+    }));
+
+    // Substitute in index signature if present
+    let instantiatedIndexSig: IndexSignatureNode | undefined;
+    if (decl.indexSignature) {
+      instantiatedIndexSig = {
+        keyType: this.substituteTypeParams(decl.indexSignature.keyType, typeParamMap),
+        valueType: this.substituteTypeParams(decl.indexSignature.valueType, typeParamMap)
+      };
+    }
+
+    // Handle extends clause with substitution
+    let extendsTypes: TypeNode[] | undefined;
+    if (decl.extends) {
+      extendsTypes = decl.extends.map(ext =>
+        this.substituteTypeParams(ext, typeParamMap)
+      );
+    }
+
+    // Emit the instantiated object type
+    const schema = this.emitObjectType(instantiatedProps, instantiatedIndexSig, decl.tags);
+
+    // If interface extends other types, use allOf
+    if (extendsTypes && extendsTypes.length > 0) {
+      const allOf: JSONSchema[] = extendsTypes.map(ext => this.emitType(ext));
+      allOf.push(schema);
+      return { allOf };
+    }
+
+    return schema;
+  }
+
+  /**
+   * Instantiate a generic type alias with concrete type arguments
+   */
+  private instantiateTypeAlias(decl: TypeAliasDeclaration, typeArgs: TypeNode[]): JSONSchema {
+    // Build type parameter mapping (same as interface)
+    const typeParamMap = new Map<string, TypeNode>();
+    const paramNames = ['T', 'U', 'V', 'W'];
+    for (let i = 0; i < Math.min(typeArgs.length, paramNames.length); i++) {
+      typeParamMap.set(paramNames[i], typeArgs[i]);
+    }
+
+    // Substitute type parameters in the aliased type
+    const instantiatedType = this.substituteTypeParams(decl.type, typeParamMap);
+
+    // Emit the instantiated type
+    return this.emitType(instantiatedType);
+  }
+
+  /**
+   * Look up a generic declaration and instantiate it with type arguments
+   */
+  private resolveGenericType(name: string, typeArgs: TypeNode[]): JSONSchema | null {
+    // Look up the declaration in our declarations map
+    const decl = this.declarations.get(name);
+    if (!decl) {
+      return null; // Generic not found, caller will fall back to $ref
+    }
+
+    // Instantiate based on declaration kind
+    if (decl.kind === "interface") {
+      return this.instantiateInterface(decl, typeArgs);
+    } else if (decl.kind === "type_alias") {
+      return this.instantiateTypeAlias(decl, typeArgs);
+    }
+
+    // Enums don't support type parameters
+    return null;
   }
 
   // ---------------------------------------------------------------------------

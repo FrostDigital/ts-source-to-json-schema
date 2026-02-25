@@ -140,6 +140,18 @@ export class Parser {
     return t?.type === type && (value === undefined || t.value === value);
   }
 
+  private skipTypeParameters(): void {
+    // Skip generic params: interface Foo<T, U> or type Foo<T>
+    if (this.match("punctuation", "<")) {
+      let depth = 1;
+      while (depth > 0 && !this.is("eof")) {
+        if (this.is("punctuation", "<")) depth++;
+        if (this.is("punctuation", ">")) depth--;
+        this.advance();
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Interface
   // ---------------------------------------------------------------------------
@@ -148,6 +160,10 @@ export class Parser {
     const jsdoc = this.consumeJSDoc();
     this.expect("keyword", "interface");
     const name = this.expect("identifier").value;
+
+    // Skip type parameters if present (e.g., <T, U>)
+    // We don't parse them yet, but need to skip them to avoid parse errors
+    this.skipTypeParameters();
 
     // extends clause
     let extendsTypes: TypeNode[] | undefined;
@@ -181,15 +197,8 @@ export class Parser {
     this.expect("keyword", "type");
     const name = this.expect("identifier").value;
 
-    // Skip generic params: type Foo<T> = ...
-    if (this.match("punctuation", "<")) {
-      let depth = 1;
-      while (depth > 0 && !this.is("eof")) {
-        if (this.is("punctuation", "<")) depth++;
-        if (this.is("punctuation", ">")) depth--;
-        this.advance();
-      }
-    }
+    // Skip type parameters if present (e.g., <T, U>)
+    this.skipTypeParameters();
 
     this.expect("punctuation", "=");
     const type = this.parseType();
