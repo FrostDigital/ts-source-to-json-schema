@@ -22,6 +22,7 @@ export interface Token {
 
 const KEYWORDS = new Set([
   "interface", "type", "export", "extends", "enum", "const", "readonly",
+  "import", "from", "as",
 ]);
 
 const PRIMITIVES = new Set([
@@ -31,7 +32,7 @@ const PRIMITIVES = new Set([
 ]);
 
 const PUNCTUATION = new Set([
-  "{", "}", "(", ")", "[", "]", ":", ";", ",", "?", "|", "&", "=", "<", ">", ".",
+  "{", "}", "(", ")", "[", "]", ":", ";", ",", "?", "|", "&", "=", "<", ">", ".", "*",
 ]);
 
 export function tokenize(source: string): Token[] {

@@ -52,6 +52,10 @@ export interface EmitterOptions {
   includeJSDoc?: boolean;
   /** Default value for additionalProperties if not specified via JSDoc or index signature */
   additionalProperties?: boolean;
+  /** Follow import statements: "none" (default in API), "local" (default in CLI), "all" */
+  followImports?: "none" | "local" | "all";
+  /** Base directory for resolving imports. Default: dirname(entryPath) or cwd */
+  baseDir?: string;
 }
 
 export class Emitter {
@@ -70,6 +74,8 @@ export class Emitter {
       rootType: options.rootType ?? "",
       includeJSDoc: options.includeJSDoc ?? true,
       additionalProperties: options.additionalProperties,
+      followImports: options.followImports ?? "none",
+      baseDir: options.baseDir ?? "",
     };
   }
 

@@ -45,9 +45,18 @@ export type {
   InterfaceDeclaration, TypeAliasDeclaration, EnumDeclaration,
 } from "./ast.js";
 
+export { ModuleResolver } from "./module-resolver.js";
+export type { ResolvedModule } from "./module-resolver.js";
+
+export { extractImports } from "./import-parser.js";
+export type { ImportStatement } from "./import-parser.js";
+
+import * as fs from "fs";
+import * as path from "path";
 import { tokenize } from "./tokenizer.js";
 import { Parser } from "./parser.js";
 import { Emitter, type JSONSchema, type EmitterOptions } from "./emitter.js";
+import { ModuleResolver } from "./module-resolver.js";
 
 /**
  * Convert TypeScript source containing type declarations to JSON Schema.
@@ -79,4 +88,35 @@ export function parseDeclarations(source: string) {
   const tokens = tokenize(source);
   const parser = new Parser(tokens);
   return parser.parse();
+}
+
+/**
+ * Convert TypeScript file to JSON Schema, following imports.
+ *
+ * @example
+ * ```ts
+ * const schema = toJsonSchemaFromFile('./types/user.ts', {
+ *   followImports: 'local',
+ *   rootType: 'User'
+ * });
+ * ```
+ */
+export function toJsonSchemaFromFile(
+  entryPath: string,
+  options?: EmitterOptions
+): JSONSchema {
+  const followMode = options?.followImports ?? "none";
+  const baseDir = options?.baseDir ?? path.dirname(path.resolve(entryPath));
+
+  if (followMode === "none") {
+    // Single-file mode (backward compatible)
+    const source = fs.readFileSync(entryPath, "utf-8");
+    return toJsonSchema(source, options);
+  }
+
+  // Multi-file mode
+  const resolver = new ModuleResolver({ followImports: followMode, baseDir });
+  const declarations = resolver.resolveFromEntry(entryPath);
+  const emitter = new Emitter(declarations, options);
+  return emitter.emit();
 }

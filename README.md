@@ -27,32 +27,174 @@ The trade-off is explicit: it handles the type constructs you'd actually use in 
 - **Interface extends**: `interface Dog extends Animal` → `allOf`
 - **Index signatures**: `[key: string]: T` → `additionalProperties`
 - **Utility types**: `Partial<T>`, `Required<T>`, `Pick<T, K>`, `Omit<T, K>`, `Record<K, V>`, `Readonly<T>`, `Set<T>`, `Map<K, V>`, `Promise<T>` (unwrapped)
+- **Local imports**: Automatic resolution of relative imports (`./` and `../`) across files
 - **JSDoc**: `/** description */` → `description`, plus tags: `@minimum`, `@maximum`, `@minLength`, `@maxLength`, `@pattern`, `@format`, `@default`, `@deprecated`, `@title`, `@example`, `@additionalProperties`
 - **Readonly**: `readonly` → `readOnly` in schema
 
 ## Installation
 
 ```bash
-npm install
+npm install ts-source-to-json-schema
 ```
 
-## Development
+## CLI Usage
+
+The package includes a command-line tool for converting TypeScript files to JSON Schema:
 
 ```bash
-# Run tests
-npm test
+# Convert a TypeScript file
+npx ts-source-to-json-schema src/types.ts
 
-# Build the project
-npm run build
+# Convert with automatic import resolution (default)
+npx ts-source-to-json-schema src/api.ts
 
-# Run an example
-npx tsx example.ts
+# Convert a specific type as the root schema
+npx ts-source-to-json-schema src/api.ts --rootType ApiResponse
+
+# Use strict mode (no additional properties allowed)
+npx ts-source-to-json-schema src/config.ts --strictObjects
+
+# Disable JSDoc processing
+npx ts-source-to-json-schema src/types.ts --includeJSDoc false
+
+# Single file mode, no imports
+npx ts-source-to-json-schema src/types.ts --followImports none
+
+# Combine multiple options
+npx ts-source-to-json-schema src/user.ts -r User --strictObjects --followImports local
 ```
 
-## Usage
+### CLI Options
+
+```
+-h, --help                     Show help message
+-v, --version                  Show version number
+    --doctor                   Output diagnostic information for debugging
+
+-r, --rootType <name>          Emit this type as root (others in $defs)
+-s, --includeSchema <bool>     Include $schema property (default: true)
+    --schemaVersion <url>      Custom $schema URL
+    --strictObjects            Set additionalProperties: false globally
+    --additionalProperties     Set additionalProperties default (true/false)
+    --includeJSDoc <bool>      Include JSDoc comments (default: true)
+
+--followImports <mode>         Follow imports: none, local, all (default: local)
+--baseDir <path>               Base directory for resolving imports
+```
+
+The CLI reads TypeScript files and outputs JSON Schema to stdout, making it easy to pipe to files or other tools:
+
+```bash
+# Save to file
+npx ts-source-to-json-schema src/types.ts > schema.json
+
+# Pretty-print with jq
+npx ts-source-to-json-schema src/types.ts | jq '.'
+
+# Use in scripts
+npx ts-source-to-json-schema src/api.ts --rootType Request > openapi/request-schema.json
+```
+
+### Multi-File Support (`--followImports`)
+
+By default, the CLI automatically follows local relative imports (`./` and `../`) to resolve type definitions across multiple files:
 
 ```typescript
-import { toJsonSchema } from "./src/index.js";
+// pet.ts
+export interface Pet {
+  _id: string;
+  name: string;
+  species: string;
+}
+
+// api.ts
+import { Pet } from './pet';
+export interface PostPetReq extends Omit<Pet, "_id"> {}
+```
+
+```bash
+# Follows imports and resolves Pet type (default behavior)
+npx ts-source-to-json-schema api.ts --rootType PostPetReq
+
+# Output includes both Pet (in $defs) and PostPetReq (as root)
+```
+
+**Import Resolution Modes:**
+- `local` (default in CLI): Follows relative imports (`./` and `../`), skips `node_modules`
+- `none`: Single-file mode, does not follow any imports
+- `all`: Reserved for future `node_modules` support (currently behaves like `local`)
+
+**Key Features:**
+- Circular dependency detection (no infinite loops)
+- Duplicate name detection (errors if same type name in multiple files)
+- Automatic extension resolution (`.ts`, `.tsx`, `.d.ts`)
+- Index file support (`./types` → `./types/index.ts`)
+
+**Examples:**
+
+```bash
+# Multi-file project with local imports
+npx ts-source-to-json-schema src/api.ts --followImports local
+
+# Single file only, ignore imports
+npx ts-source-to-json-schema src/standalone.ts --followImports none
+
+# Custom base directory for import resolution
+npx ts-source-to-json-schema src/api.ts --baseDir ./src
+```
+
+### Diagnostics Mode (`--doctor`)
+
+When you encounter issues with schema conversion, use the `--doctor` flag to output comprehensive diagnostic information that can be shared with developers:
+
+```bash
+npx ts-source-to-json-schema src/problematic-types.ts --doctor
+```
+
+The doctor output includes:
+- **Timestamp**: When the conversion was attempted
+- **Environment**: Node.js version, platform, architecture, and current working directory
+- **Input file details**: Path, existence, size, modification time, source length, and full source code
+- **Options used**: All configuration options passed to the converter
+- **Conversion result**: Either the successfully generated schema or detailed error information with stack traces
+
+This makes it easy to:
+1. Copy-paste the full diagnostic output when reporting issues
+2. Debug why a particular TypeScript file isn't converting as expected
+3. Share reproducible examples with maintainers
+
+**Example output:**
+```json
+{
+  "timestamp": "2026-02-25T10:50:55.680Z",
+  "environment": {
+    "nodeVersion": "v20.17.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cwd": "/path/to/project"
+  },
+  "input": {
+    "filePath": "types.ts",
+    "absolutePath": "/absolute/path/to/types.ts",
+    "fileExists": true,
+    "fileSize": 486,
+    "sourceLength": 486,
+    "source": "interface User { ... }"
+  },
+  "options": { "rootType": "User" },
+  "conversionResult": {
+    "success": true,
+    "schema": { ... }
+  }
+}
+```
+
+## Programmatic Usage
+
+### String-Based API
+
+```typescript
+import { toJsonSchema } from "ts-source-to-json-schema";
 
 const schema = toJsonSchema(`
   /** Input for the ad analysis tool */
@@ -72,6 +214,24 @@ const schema = toJsonSchema(`
     tags: string[];
   }
 `, { rootType: "AnalyzeAdInput" });
+```
+
+### File-Based API with Import Resolution
+
+```typescript
+import { toJsonSchemaFromFile } from "ts-source-to-json-schema";
+
+// Convert a TypeScript file with automatic import resolution
+const schema = toJsonSchemaFromFile('./src/types/api.ts', {
+  followImports: 'local',  // Follow relative imports
+  rootType: 'ApiRequest',
+  strictObjects: true
+});
+
+// Single-file mode (no import resolution)
+const singleFileSchema = toJsonSchemaFromFile('./src/types.ts', {
+  followImports: 'none'
+});
 ```
 
 Output:
@@ -112,6 +272,12 @@ toJsonSchema(source, {
   schemaVersion: "https://json-schema.org/draft/2020-12/schema",
   includeJSDoc: true,            // Include JSDoc descriptions and tags (default: true)
   additionalProperties: undefined, // Default value for additionalProperties (undefined, true, or false)
+});
+
+toJsonSchemaFromFile(filePath, {
+  // All options from toJsonSchema, plus:
+  followImports: 'local',        // Follow imports: 'none' (default for API), 'local' (default for CLI), 'all'
+  baseDir: './src',              // Base directory for resolving imports (default: dirname(filePath))
 });
 ```
 
@@ -209,6 +375,44 @@ interface Settings {
 - The tag overrides the global `additionalProperties` and `strictObjects` options
 - Index signatures take precedence over the tag
 
+### `followImports` (optional)
+- **Type:** `"none" | "local" | "all"`
+- **Default:** `"none"` (programmatic API), `"local"` (CLI)
+- **Description:** Controls import resolution across multiple TypeScript files
+
+**Modes:**
+- `none`: Single-file mode, imports are ignored
+- `local`: Follows relative imports (`./` and `../`), skips `node_modules`
+- `all`: Reserved for future `node_modules` support (currently behaves like `local`)
+
+**Only available with `toJsonSchemaFromFile()`** — the string-based `toJsonSchema()` API does not support import resolution.
+
+**Example:**
+```typescript
+// Given: pet.ts exports Pet interface
+// Given: api.ts imports Pet and uses it in PostPetReq
+
+const schema = toJsonSchemaFromFile('./api.ts', {
+  followImports: 'local',
+  rootType: 'PostPetReq'
+});
+
+// Result: Schema includes both Pet (in $defs) and PostPetReq
+```
+
+**Features:**
+- Circular dependency detection (prevents infinite loops)
+- Duplicate name detection (throws error if same type appears in multiple files)
+- Automatic extension resolution (`.ts`, `.tsx`, `.d.ts`)
+- Index file resolution (`./types` → `./types/index.ts`)
+
+### `baseDir` (optional)
+- **Type:** `string`
+- **Default:** `path.dirname(filePath)`
+- **Description:** Base directory for resolving relative imports
+
+Only relevant when `followImports` is not `"none"`.
+
 ## What it doesn't handle
 
 Anything that requires the type checker to evaluate:
@@ -218,6 +422,6 @@ Anything that requires the type checker to evaluate:
 - Template literal types (`` `${A}-${B}` ``)
 - `typeof`, `keyof`, `infer`
 - Generics (user-defined, beyond the built-in utility types)
-- Cross-file imports
+- `node_modules` imports (planned for future)
 
 If you need these, use `ts-json-schema-generator`. If your types look like API contracts and tool definitions, this is probably all you need.
