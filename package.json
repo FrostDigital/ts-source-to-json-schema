@@ -15,6 +15,11 @@
       "types": "./dist/index.d.ts"
     }
   },
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
@@ -22,7 +27,8 @@
     "test:coverage": "npm test -- --coverage",
     "test:legacy": "tsx src/test.ts",
     "dev": "tsx src/index.ts",
-    "clean": "rm -rf dist coverage"
+    "clean": "rm -rf dist coverage",
+    "prepublishOnly": "npm run clean && npm run build && npm test"
   },
   "keywords": [
     "typescript",
@@ -33,6 +39,14 @@
   ],
   "author": "",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yourusername/ts-source-to-json-schema.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/ts-source-to-json-schema/issues"
+  },
+  "homepage": "https://github.com/yourusername/ts-source-to-json-schema#readme",
   "devDependencies": {
     "@jest/globals": "^30.2.0",
     "@types/jest": "^30.0.0",
