@@ -27,7 +27,7 @@ The trade-off is explicit: it handles the type constructs you'd actually use in 
 - **Interface extends**: `interface Dog extends Animal` → `allOf`
 - **Index signatures**: `[key: string]: T` → `additionalProperties`
 - **Utility types**: `Partial<T>`, `Required<T>`, `Pick<T, K>`, `Omit<T, K>`, `Record<K, V>`, `Readonly<T>`, `Set<T>`, `Map<K, V>`, `Promise<T>` (unwrapped)
-- **JSDoc**: `/** description */` → `description`, plus tags: `@minimum`, `@maximum`, `@minLength`, `@maxLength`, `@pattern`, `@format`, `@default`, `@deprecated`, `@title`, `@example`
+- **JSDoc**: `/** description */` → `description`, plus tags: `@minimum`, `@maximum`, `@minLength`, `@maxLength`, `@pattern`, `@format`, `@default`, `@deprecated`, `@title`, `@example`, `@additionalProperties`
 - **Readonly**: `readonly` → `readOnly` in schema
 
 ## Installation
@@ -106,11 +106,12 @@ Output:
 
 ```typescript
 toJsonSchema(source, {
-  rootType: "MyType",       // Emit this type as the root schema (others go in $defs)
-  includeSchema: true,      // Include $schema field (default: true)
-  strictObjects: false,     // Set additionalProperties: false on all objects
+  rootType: "MyType",            // Emit this type as the root schema (others go in $defs)
+  includeSchema: true,           // Include $schema field (default: true)
+  strictObjects: false,          // Set additionalProperties: false on all objects
   schemaVersion: "https://json-schema.org/draft/2020-12/schema",
-  includeJSDoc: true,       // Include JSDoc descriptions and tags (default: true)
+  includeJSDoc: true,            // Include JSDoc descriptions and tags (default: true)
+  additionalProperties: undefined, // Default value for additionalProperties (undefined, true, or false)
 });
 ```
 
@@ -142,6 +143,71 @@ const schema = toJsonSchema(`
 // Result: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] }
 // No description or minLength constraint
 ```
+
+### `additionalProperties` (optional)
+- **Type:** `boolean | undefined`
+- **Default:** `undefined`
+- **Description:** Sets the default value for `additionalProperties` on all object schemas
+
+This option provides a global default for `additionalProperties` when not explicitly set via JSDoc or index signatures.
+
+**Precedence (highest to lowest):**
+1. Index signature: `[key: string]: T` → `additionalProperties: T`
+2. JSDoc `@additionalProperties` tag
+3. `strictObjects` option
+4. `additionalProperties` option
+5. Not set (JSON Schema default behavior)
+
+**Example:**
+```typescript
+// Set all objects to disallow additional properties by default
+const schema = toJsonSchema(`
+  interface User {
+    name: string;
+  }
+`, { rootType: 'User', additionalProperties: false });
+
+// Result: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'], additionalProperties: false }
+```
+
+### `@additionalProperties` JSDoc Tag
+
+Control `additionalProperties` on specific types or properties using the `@additionalProperties` JSDoc tag.
+
+**Supported values:** `true` | `false` (case-insensitive)
+
+**Usage at interface/type level:**
+```typescript
+/**
+ * Strict configuration object
+ * @additionalProperties false
+ */
+interface Config {
+  host: string;
+  port: number;
+}
+// Result: { type: 'object', properties: {...}, additionalProperties: false }
+```
+
+**Usage at property level:**
+```typescript
+interface Settings {
+  /**
+   * Database configuration
+   * @additionalProperties false
+   */
+  database: {
+    host: string;
+    port: number;
+  };
+}
+// Result: database property has additionalProperties: false
+```
+
+**Interaction with other options:**
+- When `includeJSDoc: false`, the tag is ignored
+- The tag overrides the global `additionalProperties` and `strictObjects` options
+- Index signatures take precedence over the tag
 
 ## What it doesn't handle
 

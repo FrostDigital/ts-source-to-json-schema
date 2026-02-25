@@ -55,6 +55,7 @@ export interface InterfaceDeclaration {
   properties: PropertyNode[];
   indexSignature?: IndexSignatureNode;
   description?: string;
+  tags?: Record<string, string>; // JSDoc tags like @additionalProperties
   exported: boolean;
 }
 
@@ -63,6 +64,7 @@ export interface TypeAliasDeclaration {
   name: string;
   type: TypeNode;
   description?: string;
+  tags?: Record<string, string>; // JSDoc tags like @additionalProperties
   exported: boolean;
 }
 
@@ -71,5 +73,6 @@ export interface EnumDeclaration {
   name: string;
   members: { name: string; value: string | number }[];
   description?: string;
+  tags?: Record<string, string>; // JSDoc tags like @additionalProperties
   exported: boolean;
 }

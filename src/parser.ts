@@ -167,6 +167,7 @@ export class Parser {
       properties,
       indexSignature,
       description: jsdoc?.description,
+      tags: jsdoc?.tags,
       exported,
     };
   }
@@ -201,6 +202,7 @@ export class Parser {
       name,
       type,
       description: jsdoc?.description,
+      tags: jsdoc?.tags,
       exported,
     };
   }
@@ -252,6 +254,7 @@ export class Parser {
       name,
       members,
       description: jsdoc?.description,
+      tags: jsdoc?.tags,
       exported,
     };
   }

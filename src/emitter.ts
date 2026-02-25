@@ -50,6 +50,8 @@ export interface EmitterOptions {
   rootType?: string;
   /** Include JSDoc descriptions and tags in the schema. Default: true */
   includeJSDoc?: boolean;
+  /** Default value for additionalProperties if not specified via JSDoc or index signature */
+  additionalProperties?: boolean;
 }
 
 export class Emitter {
@@ -67,6 +69,7 @@ export class Emitter {
       strictObjects: options.strictObjects ?? false,
       rootType: options.rootType ?? "",
       includeJSDoc: options.includeJSDoc ?? true,
+      additionalProperties: options.additionalProperties,
     };
   }
 
@@ -115,7 +118,7 @@ export class Emitter {
   }
 
   private emitInterface(decl: InterfaceDeclaration): JSONSchema {
-    const schema = this.emitObjectType(decl.properties, decl.indexSignature);
+    const schema = this.emitObjectType(decl.properties, decl.indexSignature, decl.tags);
 
     // Handle extends - merge parent properties via allOf
     if (decl.extends && decl.extends.length > 0) {
@@ -132,7 +135,18 @@ export class Emitter {
 
   private emitTypeAlias(decl: TypeAliasDeclaration): JSONSchema {
     const schema = this.emitType(decl.type);
-    if (this.options.includeJSDoc && decl.description) schema.description = decl.description;
+    if (this.options.includeJSDoc) {
+      if (decl.description) schema.description = decl.description;
+      // Apply @additionalProperties tag if this is an object type
+      if (decl.tags?.additionalProperties !== undefined && schema.type === "object") {
+        const value = decl.tags.additionalProperties.toLowerCase();
+        if (value === "true") {
+          schema.additionalProperties = true;
+        } else if (value === "false") {
+          schema.additionalProperties = false;
+        }
+      }
+    }
     return schema;
   }
 
@@ -215,7 +229,7 @@ export class Emitter {
     }
   }
 
-  private emitObjectType(properties: PropertyNode[], indexSignature?: IndexSignatureNode): JSONSchema {
+  private emitObjectType(properties: PropertyNode[], indexSignature?: IndexSignatureNode, tags?: Record<string, string>): JSONSchema {
     const schema: JSONSchema = { type: "object" };
     const props: Record<string, JSONSchema> = {};
     const required: string[] = [];
@@ -241,10 +255,24 @@ export class Emitter {
       schema.required = required;
     }
 
+    // Handle additionalProperties in order of precedence:
+    // 1. Index signature
+    // 2. @additionalProperties JSDoc tag
+    // 3. strictObjects option
+    // 4. additionalProperties option
     if (indexSignature) {
       schema.additionalProperties = this.emitType(indexSignature.valueType);
+    } else if (this.options.includeJSDoc && tags?.additionalProperties !== undefined) {
+      const value = tags.additionalProperties.toLowerCase();
+      if (value === "true") {
+        schema.additionalProperties = true;
+      } else if (value === "false") {
+        schema.additionalProperties = false;
+      }
     } else if (this.options.strictObjects) {
       schema.additionalProperties = false;
+    } else if (this.options.additionalProperties !== undefined) {
+      schema.additionalProperties = this.options.additionalProperties;
     }
 
     return schema;
@@ -533,6 +561,17 @@ export class Emitter {
           break;
         case "deprecated": schema.deprecated = true; break;
         case "title": schema.title = value; break;
+        case "additionalProperties":
+          // Only apply to object types
+          if (schema.type === "object") {
+            const lowerValue = value.toLowerCase();
+            if (lowerValue === "true") {
+              schema.additionalProperties = true;
+            } else if (lowerValue === "false") {
+              schema.additionalProperties = false;
+            }
+          }
+          break;
       }
     }
   }
