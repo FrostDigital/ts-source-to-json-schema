@@ -119,8 +119,24 @@ export class Parser {
         continue;
       }
 
-      // Skip 'export'
-      const exported = !!this.match("keyword", "export");
+      // Handle 'export' keyword
+      let exported = false;
+      if (this.is("keyword", "export")) {
+        // Check for re-exports: export { X } from "path", export * from "path"
+        if (this.isReExport()) {
+          this.skipReExport();
+          continue;
+        }
+        this.advance(); // consume 'export'
+        exported = true;
+      }
+      this.match("keyword", "default");
+
+      // Skip 'declare' keyword
+      this.match("keyword", "declare");
+
+      // Skip 'abstract' keyword (for abstract class)
+      this.match("keyword", "abstract");
 
       if (this.is("keyword", "interface")) {
         declarations.push(this.parseInterface(exported));
@@ -128,6 +144,22 @@ export class Parser {
         declarations.push(this.parseTypeAlias(exported));
       } else if (this.is("keyword", "enum") || (this.is("keyword", "const") && this.peekAhead("keyword", "enum"))) {
         declarations.push(this.parseEnum(exported));
+      } else if (this.is("keyword", "module") || this.is("keyword", "namespace")) {
+        // Skip: declare module "name" { ... } / declare namespace X { ... }
+        this.advance(); // consume 'module' or 'namespace'
+        this.skipBlock();
+      } else if (this.is("keyword", "function")) {
+        // Skip: declare function foo(...): T;
+        this.advance(); // consume 'function'
+        this.skipStatement();
+      } else if (this.is("keyword", "class")) {
+        // Skip: declare class Foo { ... }
+        this.advance(); // consume 'class'
+        this.skipBlock();
+      } else if (this.is("keyword", "var") || this.is("keyword", "let") || this.is("keyword", "const")) {
+        // Skip: declare const/var/let foo: T;
+        this.advance(); // consume var/let/const
+        this.skipStatement();
       } else {
         // Skip unknown tokens
         this.advance();
@@ -156,6 +188,117 @@ export class Parser {
         if (this.is("punctuation", ">")) depth--;
         this.advance();
       }
+    }
+  }
+
+  private isReExport(): boolean {
+    // Look ahead to detect: export { ... } from "path" or export * from "path"
+    // or export type { ... } from "path"
+    let p = this.pos;
+    // skip 'export'
+    p++;
+    while (p < this.tokens.length && this.tokens[p].type === "newline") p++;
+
+    // skip optional 'type'
+    if (this.tokens[p]?.type === "keyword" && this.tokens[p]?.value === "type") {
+      p++;
+      while (p < this.tokens.length && this.tokens[p].type === "newline") p++;
+    }
+
+    const t = this.tokens[p];
+    if (!t) return false;
+
+    // export * from "path"
+    if (t.type === "punctuation" && t.value === "*") {
+      p++;
+      while (p < this.tokens.length && this.tokens[p].type === "newline") p++;
+      return this.tokens[p]?.type === "keyword" && this.tokens[p]?.value === "from";
+    }
+
+    // export { ... } from "path"
+    if (t.type === "punctuation" && t.value === "{") {
+      let depth = 1;
+      p++;
+      while (p < this.tokens.length && depth > 0) {
+        if (this.tokens[p].type === "newline") { p++; continue; }
+        if (this.tokens[p].value === "{") depth++;
+        if (this.tokens[p].value === "}") depth--;
+        p++;
+      }
+      while (p < this.tokens.length && this.tokens[p].type === "newline") p++;
+      return this.tokens[p]?.type === "keyword" && this.tokens[p]?.value === "from";
+    }
+
+    return false;
+  }
+
+  private skipReExport(): void {
+    // Skip: export [type] { ... } from "path" or export [type] * from "path"
+    this.advance(); // consume 'export'
+    this.match("keyword", "type"); // optional 'type'
+
+    if (this.is("punctuation", "*")) {
+      this.advance(); // consume '*'
+    } else if (this.is("punctuation", "{")) {
+      this.advance(); // consume '{'
+      let depth = 1;
+      while (depth > 0 && !this.is("eof")) {
+        if (this.is("punctuation", "{")) depth++;
+        if (this.is("punctuation", "}")) depth--;
+        this.advance();
+      }
+    }
+
+    // consume 'from "path"'
+    this.match("keyword", "from");
+    if (this.is("string")) this.advance();
+    this.match("punctuation", ";");
+  }
+
+  private skipBlock(): void {
+    // Skip tokens until we find a { } block or a semicolon, consuming the block
+    // Used for: declare module "x" { ... }, declare class Foo { ... }, etc.
+    while (!this.is("eof")) {
+      if (this.is("punctuation", "{")) {
+        this.advance(); // consume '{'
+        let depth = 1;
+        while (depth > 0 && !this.is("eof")) {
+          if (this.is("punctuation", "{")) depth++;
+          if (this.is("punctuation", "}")) depth--;
+          this.advance();
+        }
+        return;
+      }
+      if (this.is("punctuation", ";")) {
+        this.advance();
+        return;
+      }
+      this.advance();
+    }
+  }
+
+  private skipStatement(): void {
+    // Skip tokens until semicolon or newline-followed-by-keyword (for declaration files without semicolons)
+    while (!this.is("eof")) {
+      if (this.is("punctuation", ";")) {
+        this.advance();
+        return;
+      }
+      if (this.is("punctuation", "{")) {
+        // Statement has a block body (e.g., function with body)
+        this.skipBlock();
+        return;
+      }
+      // Stop if we hit a keyword that starts a new declaration
+      const next = this.peek();
+      if (next.type === "keyword" && (
+        next.value === "export" || next.value === "declare" ||
+        next.value === "interface" || next.value === "type" ||
+        next.value === "enum" || next.value === "import"
+      )) {
+        return;
+      }
+      this.advance();
     }
   }
 

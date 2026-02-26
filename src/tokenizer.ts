@@ -22,7 +22,8 @@ export interface Token {
 
 const KEYWORDS = new Set([
   "interface", "type", "export", "extends", "enum", "const", "readonly",
-  "import", "from", "as",
+  "import", "from", "as", "declare", "module", "namespace", "function",
+  "class", "var", "let", "default", "abstract",
 ]);
 
 const PRIMITIVES = new Set([

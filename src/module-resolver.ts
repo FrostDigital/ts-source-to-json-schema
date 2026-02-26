@@ -7,7 +7,7 @@ import * as path from "path";
 import { tokenize } from "./tokenizer.js";
 import { Parser } from "./parser.js";
 import { extractImports, type ImportStatement } from "./import-parser.js";
-import { resolveImportPath, resolveExtensions } from "./path-utils.js";
+import { resolveImportPath, resolveExtensions, isRelativeImport } from "./path-utils.js";
 import type { Declaration } from "./ast.js";
 
 export interface ResolvedModule {
@@ -96,7 +96,17 @@ export class ModuleResolver {
         this.options.followImports
       );
       if (resolved) {
-        this.resolveModule(resolved);
+        try {
+          this.resolveModule(resolved);
+        } catch (err) {
+          // In "all" mode, gracefully skip unresolvable external modules.
+          // The types will remain as $ref references in the schema.
+          if (this.options.followImports === "all" && !isRelativeImport(imp.modulePath)) {
+            // Silently skip - the types will be unresolved $refs
+            continue;
+          }
+          throw err;
+        }
       }
     }
   }
