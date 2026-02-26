@@ -157,7 +157,11 @@ export function toJsonSchemaFromFile(
   }
 
   // Multi-file mode
-  const resolver = new ModuleResolver({ followImports: followMode, baseDir });
+  const resolver = new ModuleResolver({
+    followImports: followMode,
+    baseDir,
+    onDuplicateDeclarations: options?.onDuplicateDeclarations,
+  });
   const declarations = resolver.resolveFromEntry(entryPath);
   const emitter = new Emitter(declarations, options);
   return emitter.emit();
@@ -204,7 +208,11 @@ export function toJsonSchemasFromFile(
   }
 
   // Multi-file mode
-  const resolver = new ModuleResolver({ followImports: followMode, baseDir });
+  const resolver = new ModuleResolver({
+    followImports: followMode,
+    baseDir,
+    onDuplicateDeclarations: options?.onDuplicateDeclarations,
+  });
   const declarations = resolver.resolveFromEntry(entryPath);
   const emitter = new Emitter(declarations, options || {});
   return emitter.emitAll();

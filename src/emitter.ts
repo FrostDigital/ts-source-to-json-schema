@@ -56,6 +56,14 @@ export interface EmitterOptions {
   followImports?: "none" | "local" | "all";
   /** Base directory for resolving imports. Default: dirname(entryPath) or cwd */
   baseDir?: string;
+  /**
+   * How to handle duplicate type declarations across files.
+   * - 'error': Throw error (strict, default)
+   * - 'warn': Use first declaration, log warning
+   * - 'silent': Use first declaration, no warning
+   * Default: 'error'
+   */
+  onDuplicateDeclarations?: 'error' | 'warn' | 'silent';
 }
 
 export class Emitter {
@@ -76,6 +84,7 @@ export class Emitter {
       additionalProperties: options.additionalProperties,
       followImports: options.followImports ?? "none",
       baseDir: options.baseDir ?? "",
+      onDuplicateDeclarations: options.onDuplicateDeclarations ?? "error",
     };
   }
 

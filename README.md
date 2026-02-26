@@ -378,12 +378,14 @@ toJsonSchemaFromFile(filePath, {
   // All options from toJsonSchema, plus:
   followImports: 'local',        // Follow imports: 'none' (default for API), 'local' (default for CLI), 'all'
   baseDir: './src',              // Base directory for resolving imports (default: dirname(filePath))
+  onDuplicateDeclarations: 'error', // Handle duplicate type names: 'error' (default), 'warn', 'silent'
 });
 
 toJsonSchemasFromFile(filePath, {
   // All options from toJsonSchemas, plus:
   followImports: 'local',        // Follow imports: 'none', 'local' (default), 'all'
   baseDir: './src',              // Base directory for resolving imports (default: dirname(filePath))
+  onDuplicateDeclarations: 'error', // Handle duplicate type names: 'error' (default), 'warn', 'silent'
   // Note: rootType is not supported (generates schemas for all types)
 });
 ```
@@ -555,7 +557,7 @@ const schema = toJsonSchemaFromFile('./api.ts', {
 
 **Features:**
 - Circular dependency detection (prevents infinite loops)
-- Duplicate name detection (throws error if same type appears in multiple files)
+- Duplicate name handling (configurable with `onDuplicateDeclarations` option)
 - Automatic extension resolution (`.ts`, `.tsx`, `.d.ts`)
 - Index file resolution (`./types` → `./types/index.ts`)
 
@@ -565,6 +567,68 @@ const schema = toJsonSchemaFromFile('./api.ts', {
 - **Description:** Base directory for resolving relative imports
 
 Only relevant when `followImports` is not `"none"`.
+
+### `onDuplicateDeclarations` (optional)
+- **Type:** `"error" | "warn" | "silent"`
+- **Default:** `"error"`
+- **Description:** Controls how to handle duplicate type names across multiple files
+
+**Only relevant when `followImports` is not `"none"`** (requires import resolution).
+
+**Modes:**
+- `error` (default): Throws an error when the same type name is found in multiple files
+- `warn`: Uses the first declaration encountered and logs a warning to `console.warn`
+- `silent`: Uses the first declaration encountered without any warning
+
+**When to use:**
+- `error`: Strict mode for catching unintentional duplicates (recommended for most cases)
+- `warn`: Development mode where you want to be notified but not block execution
+- `silent`: When you have intentional duplicates and want to use the first declaration
+
+**Example:**
+```typescript
+// File 1: schemas/CampaignImage.ts
+export interface ImageDimensions {
+  width: number;
+  height: number;
+  format?: string;
+}
+
+// File 2: schemas/BrandAsset.ts
+export interface ImageDimensions {
+  width: number;
+  height: number;
+  format: string;  // Required (different from File 1)
+}
+
+// With error mode (default) - throws error
+toJsonSchemaFromFile('entry.ts', {
+  followImports: 'local'
+});
+// Error: Duplicate declaration "ImageDimensions" found in:
+//   .../CampaignImage.ts
+//   .../BrandAsset.ts
+
+// With warn mode - uses first declaration
+toJsonSchemaFromFile('entry.ts', {
+  followImports: 'local',
+  onDuplicateDeclarations: 'warn'
+});
+// Warning: Duplicate declaration "ImageDimensions" found...
+// Uses ImageDimensions from CampaignImage.ts (format is optional)
+
+// With silent mode - uses first declaration without warning
+toJsonSchemaFromFile('entry.ts', {
+  followImports: 'local',
+  onDuplicateDeclarations: 'silent'
+});
+// No warning, uses ImageDimensions from CampaignImage.ts
+```
+
+**Best practice:** Keep the default `error` mode to catch duplicate names early. If you encounter duplicates:
+1. Check if the types are structurally identical — if so, extract to a shared file
+2. If they're different but have the same name, rename one of them for clarity
+3. Use `warn` or `silent` mode only as a temporary workaround
 
 ## What it doesn't handle
 

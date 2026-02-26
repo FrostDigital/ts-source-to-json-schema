@@ -24,6 +24,7 @@ export class ModuleResolver {
   constructor(private options: {
     followImports: "none" | "local" | "all";
     baseDir: string;
+    onDuplicateDeclarations?: "error" | "warn" | "silent";
   }) {}
 
   /**
@@ -103,15 +104,22 @@ export class ModuleResolver {
   private mergeDeclarations(): Declaration[] {
     const allDeclarations: Declaration[] = [];
     const nameMap = new Map<string, string>();  // name → filePath
+    const duplicateMode = this.options.onDuplicateDeclarations ?? "error";
 
     for (const [filePath, module] of this.modules) {
       for (const decl of module.declarations) {
         // Detect name collisions
         const existing = nameMap.get(decl.name);
         if (existing && existing !== filePath) {
-          throw new Error(
-            `Duplicate declaration "${decl.name}" found in:\n  ${existing}\n  ${filePath}`
-          );
+          const errorMsg = `Duplicate declaration "${decl.name}" found in:\n  ${existing}\n  ${filePath}`;
+
+          if (duplicateMode === "error") {
+            throw new Error(errorMsg);
+          } else if (duplicateMode === "warn") {
+            console.warn(`[ts-source-to-json-schema] Warning: ${errorMsg}\nUsing first declaration from: ${existing}`);
+          }
+          // For both 'warn' and 'silent', skip the duplicate (keep first)
+          continue;
         }
         nameMap.set(decl.name, filePath);
         allDeclarations.push(decl);
