@@ -51,6 +51,7 @@ export type Declaration =
 export interface InterfaceDeclaration {
   kind: "interface";
   name: string;
+  sourceFile?: string;
   extends?: TypeNode[];
   properties: PropertyNode[];
   indexSignature?: IndexSignatureNode;
@@ -62,6 +63,7 @@ export interface InterfaceDeclaration {
 export interface TypeAliasDeclaration {
   kind: "type_alias";
   name: string;
+  sourceFile?: string;
   type: TypeNode;
   description?: string;
   tags?: Record<string, string>; // JSDoc tags like @additionalProperties
@@ -71,6 +73,7 @@ export interface TypeAliasDeclaration {
 export interface EnumDeclaration {
   kind: "enum";
   name: string;
+  sourceFile?: string;
   members: { name: string; value: string | number }[];
   description?: string;
   tags?: Record<string, string>; // JSDoc tags like @additionalProperties

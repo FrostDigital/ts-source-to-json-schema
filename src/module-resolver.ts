@@ -132,7 +132,10 @@ export class ModuleResolver {
           continue;
         }
         nameMap.set(decl.name, filePath);
-        allDeclarations.push(decl);
+
+        // Attach source file path to declaration
+        const declWithFile: Declaration = { ...decl, sourceFile: filePath };
+        allDeclarations.push(declWithFile);
       }
     }
 

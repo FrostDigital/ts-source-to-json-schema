@@ -2,6 +2,7 @@
 // Emitter - Transforms AST nodes into JSON Schema (2020-12 draft)
 // ============================================================================
 
+import path from "node:path";
 import type {
   Declaration, TypeNode, PropertyNode, InterfaceDeclaration,
   TypeAliasDeclaration, EnumDeclaration, IndexSignatureNode,
@@ -64,13 +65,91 @@ export interface EmitterOptions {
    * Default: 'error'
    */
   onDuplicateDeclarations?: 'error' | 'warn' | 'silent';
+  /**
+   * Callback to transform type names in $defs and $ref pointers.
+   * Useful for namespacing types by file, adding prefixes/suffixes, or custom naming schemes.
+   *
+   * @param originalName - The original type name from the TypeScript source
+   * @param declaration - The AST declaration node for the type
+   * @param context - File path context (undefined for string-based APIs, defined for file-based APIs)
+   * @returns The transformed name to use in the schema
+   *
+   * @example
+   * // Namespace by file path
+   * defineNameTransform: (name, decl, context) => {
+   *   if (!context) return name;
+   *   const parts = context.relativePath.replace(/\.ts$/, '').split('/');
+   *   return `${parts.join('_')}_${name}`;
+   * }
+   *
+   * @example
+   * // Add prefix by declaration kind
+   * defineNameTransform: (name, decl) => {
+   *   const prefix = decl.kind === 'interface' ? 'I' : 'T';
+   *   return `${prefix}${name}`;
+   * }
+   */
+  defineNameTransform?: (
+    originalName: string,
+    declaration: Declaration,
+    context?: {
+      absolutePath: string;
+      relativePath: string;
+    }
+  ) => string;
 }
 
 export class Emitter {
   private declarations = new Map<string, Declaration>();
-  private options: Required<EmitterOptions>;
+  private nameMapping = new Map<string, string>();
+  private options: Required<Omit<EmitterOptions, 'defineNameTransform'>> & { defineNameTransform?: EmitterOptions['defineNameTransform'] };
 
   constructor(declarations: Declaration[], options: EmitterOptions = {}) {
+    // Build name mapping BEFORE populating declarations map
+    if (options.defineNameTransform) {
+      const reverseMap = new Map<string, string[]>();
+
+      for (const decl of declarations) {
+        try {
+          // Build context with both absolute and relative paths
+          let context: { absolutePath: string; relativePath: string } | undefined;
+          if (decl.sourceFile) {
+            context = {
+              absolutePath: decl.sourceFile,
+              relativePath: path.relative(process.cwd(), decl.sourceFile)
+            };
+          }
+
+          const transformedName = options.defineNameTransform(
+            decl.name,
+            decl,
+            context
+          );
+          this.nameMapping.set(decl.name, transformedName);
+
+          // Track for collision detection
+          if (!reverseMap.has(transformedName)) {
+            reverseMap.set(transformedName, []);
+          }
+          reverseMap.get(transformedName)!.push(decl.name);
+        } catch (err) {
+          throw new Error(
+            `defineNameTransform callback threw error for type "${decl.name}": ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      }
+
+      // Check for collisions
+      for (const [transformedName, originalNames] of reverseMap) {
+        if (originalNames.length > 1) {
+          throw new Error(
+            `defineNameTransform produced duplicate name "${transformedName}" for types: ${originalNames.join(", ")}\n` +
+            `Each transformed name must be unique. Please adjust your transform function.`
+          );
+        }
+      }
+    }
+
     for (const decl of declarations) {
       this.declarations.set(decl.name, decl);
     }
@@ -85,7 +164,12 @@ export class Emitter {
       followImports: options.followImports ?? "none",
       baseDir: options.baseDir ?? "",
       onDuplicateDeclarations: options.onDuplicateDeclarations ?? "error",
+      defineNameTransform: options.defineNameTransform,
     };
+  }
+
+  private getDefineName(originalName: string): string {
+    return this.nameMapping.get(originalName) ?? originalName;
   }
 
   /**
@@ -199,20 +283,22 @@ export class Emitter {
           continue; // Skip this generic declaration
         }
       }
-      defs[name] = this.emitDeclaration(decl);
+      defs[this.getDefineName(name)] = this.emitDeclaration(decl);
     }
 
     // If a root type is specified, use it as the root schema
-    if (this.options.rootType && defs[this.options.rootType]) {
-      const root = defs[this.options.rootType];
+    if (this.options.rootType && defs[this.getDefineName(this.options.rootType)]) {
+      const transformedRootName = this.getDefineName(this.options.rootType);
+      const root = defs[transformedRootName];
 
       // Check if root type is self-referential (directly or transitively)
-      const isSelfReferential = this.isTransitivelySelfReferential(this.options.rootType, defs);
+      // Use transformed name since defs keys are transformed
+      const isSelfReferential = this.isTransitivelySelfReferential(transformedRootName, defs);
 
       if (isSelfReferential) {
         // Keep root in $defs and make root a $ref to it
         const result: JSONSchema = {
-          $ref: `#/$defs/${this.options.rootType}`,
+          $ref: `#/$defs/${transformedRootName}`,
         };
         if (this.options.includeSchema) {
           result.$schema = this.options.schemaVersion;
@@ -222,7 +308,7 @@ export class Emitter {
       }
 
       // Not self-referential, emit normally
-      delete defs[this.options.rootType];
+      delete defs[transformedRootName];
 
       const result: JSONSchema = { ...root };
       if (this.options.includeSchema) {
@@ -252,7 +338,8 @@ export class Emitter {
     const schemas: Record<string, JSONSchema> = {};
 
     for (const [typeName, decl] of this.declarations) {
-      schemas[typeName] = this.emitDeclarationStandalone(decl);
+      const transformedName = this.getDefineName(typeName);
+      schemas[transformedName] = this.emitDeclarationStandalone(decl);
     }
 
     return schemas;
@@ -284,7 +371,7 @@ export class Emitter {
 
     // If type is self-referential, include it in its own definitions
     if (selfReferenced) {
-      definitions[decl.name] = schema;
+      definitions[this.getDefineName(decl.name)] = schema;
     }
 
     // Add all referenced types
@@ -292,7 +379,8 @@ export class Emitter {
       if (typeName !== decl.name) {
         const referencedDecl = this.declarations.get(typeName);
         if (referencedDecl) {
-          definitions[typeName] = this.emitDeclaration(referencedDecl);
+          const transformedName = this.getDefineName(typeName);
+          definitions[transformedName] = this.emitDeclaration(referencedDecl);
         }
       }
     }
@@ -467,7 +555,8 @@ export class Emitter {
     }
 
     // Check if this is a direct reference to the type
-    if (schema.$ref === `#/$defs/${typeName}`) {
+    const transformedName = this.getDefineName(typeName);
+    if (schema.$ref === `#/$defs/${transformedName}`) {
       return true;
     }
 
@@ -591,7 +680,7 @@ export class Emitter {
       const allOf: JSONSchema[] = decl.extends.map((typeNode) => {
         // If it's a simple reference, use $ref
         if (typeNode.kind === "reference" && !typeNode.typeArgs) {
-          return { $ref: `#/$defs/${typeNode.name}` };
+          return { $ref: `#/$defs/${this.getDefineName(typeNode.name)}` };
         }
         // If it's a utility type or complex type, resolve it inline
         return this.emitType(typeNode);
@@ -870,7 +959,7 @@ export class Emitter {
 
     // If the declaration exists and is simple, we could inline it,
     // but using $ref is more correct and handles circular refs
-    return { $ref: `#/$defs/${node.name}` };
+    return { $ref: `#/$defs/${this.getDefineName(node.name)}` };
   }
 
   private emitRecord(keyType: TypeNode, valueType: TypeNode): JSONSchema {
