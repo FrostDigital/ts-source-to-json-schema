@@ -97,12 +97,46 @@ export interface EmitterOptions {
       relativePath: string;
     }
   ) => string;
+  /**
+   * Callback to assign a `$id` to each schema in batch generation.
+   * When set, schemas use external `$ref` (the `$id` of the referenced type)
+   * instead of local `#/definitions/...` refs. This eliminates the `definitions`
+   * block entirely — AJV resolves external refs from its global registry.
+   *
+   * The `$id` also becomes the key in the returned `Record<string, JSONSchema>`.
+   *
+   * @param originalName - The original type name from the TypeScript source
+   * @param declaration - The AST declaration node for the type
+   * @param context - File path context (undefined for string-based APIs, defined for file-based APIs)
+   * @returns The `$id` for this schema
+   *
+   * @example
+   * // Simple dot-namespaced IDs for AJV
+   * defineId: (name) => `schemas.${name}`
+   *
+   * @example
+   * // Namespace by file path
+   * defineId: (name, decl, context) => {
+   *   if (!context) return name;
+   *   const dir = context.relativePath.replace(/\.ts$/, '').replace(/\//g, '.');
+   *   return `${dir}.${name}`;
+   * }
+   */
+  defineId?: (
+    originalName: string,
+    declaration: Declaration,
+    context?: {
+      absolutePath: string;
+      relativePath: string;
+    }
+  ) => string;
 }
 
 export class Emitter {
   private declarations = new Map<string, Declaration>();
   private nameMapping = new Map<string, string>();
-  private options: Required<Omit<EmitterOptions, 'defineNameTransform'>> & { defineNameTransform?: EmitterOptions['defineNameTransform'] };
+  private idMapping = new Map<string, string>();
+  private options: Required<Omit<EmitterOptions, 'defineNameTransform' | 'defineId'>> & { defineNameTransform?: EmitterOptions['defineNameTransform']; defineId?: EmitterOptions['defineId'] };
 
   constructor(declarations: Declaration[], options: EmitterOptions = {}) {
     // Build name mapping BEFORE populating declarations map
@@ -150,6 +184,46 @@ export class Emitter {
       }
     }
 
+    // Build id mapping when defineId is provided
+    if (options.defineId) {
+      const reverseIdMap = new Map<string, string[]>();
+
+      for (const decl of declarations) {
+        try {
+          let context: { absolutePath: string; relativePath: string } | undefined;
+          if (decl.sourceFile) {
+            context = {
+              absolutePath: decl.sourceFile,
+              relativePath: path.relative(process.cwd(), decl.sourceFile)
+            };
+          }
+
+          const id = options.defineId(decl.name, decl, context);
+          this.idMapping.set(decl.name, id);
+
+          // Track for collision detection
+          if (!reverseIdMap.has(id)) {
+            reverseIdMap.set(id, []);
+          }
+          reverseIdMap.get(id)!.push(decl.name);
+        } catch (err) {
+          throw new Error(
+            `defineId callback threw error for type "${decl.name}": ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      }
+
+      // Check for collisions
+      for (const [id, originalNames] of reverseIdMap) {
+        if (originalNames.length > 1) {
+          throw new Error(
+            `defineId produced duplicate id "${id}" for types: ${originalNames.join(", ")}\n` +
+            `Each $id must be unique. Please adjust your defineId function.`
+          );
+        }
+      }
+    }
+
     for (const decl of declarations) {
       this.declarations.set(decl.name, decl);
     }
@@ -165,11 +239,16 @@ export class Emitter {
       baseDir: options.baseDir ?? "",
       onDuplicateDeclarations: options.onDuplicateDeclarations ?? "error",
       defineNameTransform: options.defineNameTransform,
+      defineId: options.defineId,
     };
   }
 
   private getDefineName(originalName: string): string {
     return this.nameMapping.get(originalName) ?? originalName;
+  }
+
+  private getDefineId(originalName: string): string | undefined {
+    return this.idMapping.get(originalName);
   }
 
   /**
@@ -338,8 +417,8 @@ export class Emitter {
     const schemas: Record<string, JSONSchema> = {};
 
     for (const [typeName, decl] of this.declarations) {
-      const transformedName = this.getDefineName(typeName);
-      schemas[transformedName] = this.emitDeclarationStandalone(decl);
+      const key = this.getDefineId(typeName) ?? this.getDefineName(typeName);
+      schemas[key] = this.emitDeclarationStandalone(decl);
     }
 
     return schemas;
@@ -349,8 +428,32 @@ export class Emitter {
    * Emits a declaration as a standalone schema with minimal definitions.
    * Only includes types that are transitively referenced.
    * Uses "definitions" (draft-07 style) instead of "$defs" for compatibility.
+   *
+   * When `defineId` is set, uses external `$ref` (the `$id` of the referenced type)
+   * instead of local `#/definitions/...` refs, eliminating the `definitions` block.
    */
   private emitDeclarationStandalone(decl: Declaration): JSONSchema {
+    // Emit the main schema
+    const schema = this.emitDeclaration(decl);
+
+    // When defineId is set, use external $ref mode (no definitions block)
+    if (this.options.defineId) {
+      const result = this.convertRefsToExternalIds(schema);
+
+      // Add $id
+      const id = this.getDefineId(decl.name);
+      if (id) {
+        result.$id = id;
+      }
+
+      // Add $schema if enabled
+      if (this.options.includeSchema !== false) {
+        result.$schema = this.options.schemaVersion || "https://json-schema.org/draft/2020-12/schema";
+      }
+
+      return result;
+    }
+
     // Find direct references from this declaration (not including the type itself)
     const directRefs = this.findDirectReferences(decl);
 
@@ -362,9 +465,6 @@ export class Emitter {
 
     // Check if this type is self-referential
     const selfReferenced = referencedTypes.has(decl.name);
-
-    // Emit the main schema
-    const schema = this.emitDeclaration(decl);
 
     // Build minimal definitions object
     const definitions: Record<string, JSONSchema> = {};
@@ -543,6 +643,56 @@ export class Emitter {
     }
 
     return converted;
+  }
+
+  /**
+   * Recursively converts internal $ref paths to external $id references.
+   * Replaces `#/$defs/TypeName` with the $id of the referenced type.
+   */
+  private convertRefsToExternalIds(schema: JSONSchema): JSONSchema {
+    if (typeof schema !== "object" || schema === null) {
+      return schema;
+    }
+
+    const converted: JSONSchema = {};
+
+    for (const [key, value] of Object.entries(schema)) {
+      if (key === "$ref" && typeof value === "string") {
+        const defsMatch = value.match(/^#\/\$defs\/(.+)$/);
+        if (defsMatch) {
+          const transformedName = defsMatch[1];
+          // Find the original name that maps to this transformed name
+          const originalName = this.findOriginalName(transformedName);
+          const id = originalName ? this.getDefineId(originalName) : undefined;
+          converted[key] = id ?? value;
+        } else {
+          converted[key] = value;
+        }
+      } else if (Array.isArray(value)) {
+        converted[key] = value.map(item =>
+          typeof item === "object" ? this.convertRefsToExternalIds(item) : item
+        );
+      } else if (typeof value === "object" && value !== null) {
+        converted[key] = this.convertRefsToExternalIds(value as JSONSchema);
+      } else {
+        converted[key] = value;
+      }
+    }
+
+    return converted;
+  }
+
+  /**
+   * Finds the original type name from a transformed (getDefineName) name.
+   */
+  private findOriginalName(transformedName: string): string | undefined {
+    // Check if any name mapping matches
+    for (const [original, transformed] of this.nameMapping) {
+      if (transformed === transformedName) return original;
+    }
+    // If no mapping, the transformed name IS the original name
+    if (this.declarations.has(transformedName)) return transformedName;
+    return undefined;
   }
 
   /**

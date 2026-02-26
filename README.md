@@ -77,6 +77,7 @@ npx ts-source-to-json-schema src/user.ts -r User --strictObjects --followImports
 -h, --help                     Show help message
 -v, --version                  Show version number
     --doctor                   Output diagnostic information for debugging
+    --batch                    Batch mode: generate schemas for all types across files
 
 -r, --rootType <name>          Emit this type as root (others in $defs)
 -s, --includeSchema <bool>     Include $schema property (default: true)
@@ -149,6 +150,32 @@ npx ts-source-to-json-schema src/standalone.ts --followImports none
 # Custom base directory for import resolution
 npx ts-source-to-json-schema src/api.ts --baseDir ./src
 ```
+
+### Batch Mode (`--batch`)
+
+Use `--batch` to generate schemas for all types across multiple files at once. Accepts glob patterns or multiple file paths:
+
+```bash
+# Batch: all schemas from matching files
+npx ts-source-to-json-schema --batch 'src/schemas/**/*.ts' --followImports local
+
+# Batch: specific files
+npx ts-source-to-json-schema --batch src/PostReq.ts src/PostRes.ts --followImports local
+
+# Batch with strict objects
+npx ts-source-to-json-schema --batch 'src/types/*.ts' --strictObjects
+```
+
+Output is a JSON object where keys are type names and values are standalone schemas:
+
+```json
+{
+  "PostReq": { "$schema": "...", "type": "object", "properties": { ... } },
+  "PostRes": { "$schema": "...", "type": "object", "properties": { ... } }
+}
+```
+
+Shared imports are resolved once and deduplicated across all entry files.
 
 ### Diagnostics Mode (`--doctor`)
 
@@ -334,6 +361,45 @@ console.log(schemas.GetTree_12_ResSchema);
 
 **Performance:** Same batch performance benefits as `toJsonSchemas()`, plus automatic import resolution.
 
+#### Multi-Entry Batch Generation
+
+When you need to generate schemas from multiple TypeScript files (not just one entry file), use `toJsonSchemasFromFiles()`. It accepts a glob pattern or an array of file paths:
+
+```typescript
+import { toJsonSchemasFromFiles } from "ts-source-to-json-schema";
+
+// Glob pattern — matches all .ts files in src/schemas/
+const schemas = toJsonSchemasFromFiles('src/schemas/**/*.ts', {
+  followImports: 'local'
+});
+
+// Array of specific files
+const schemas = toJsonSchemasFromFiles([
+  'src/schemas/PostUserReq.ts',
+  'src/schemas/PostUserRes.ts'
+], { followImports: 'local' });
+
+// With defineNameTransform for namespacing
+const schemas = toJsonSchemasFromFiles('src/schemas/**/*.ts', {
+  followImports: 'local',
+  defineNameTransform: (name, decl, ctx) => {
+    const file = path.basename(ctx?.relativePath ?? '', '.ts');
+    return `${file}.${name}`;
+  }
+});
+```
+
+**Key benefits over `toJsonSchemasFromFile()`:**
+- Accepts multiple entry files or a glob pattern (not just a single file)
+- Shared imports are resolved once and deduplicated across all entry files
+- Combined with `defineNameTransform`, enables stable type IDs across all schemas
+- Returns `{}` when no files match (safe for empty globs)
+
+**Glob support:**
+- `*` matches any characters within a file/directory name
+- `**` matches zero or more directory levels
+- `?` matches a single character
+
 Output:
 
 ```json
@@ -385,6 +451,15 @@ toJsonSchemasFromFile(filePath, {
   // All options from toJsonSchemas, plus:
   followImports: 'local',        // Follow imports: 'none', 'local' (default), 'all'
   baseDir: './src',              // Base directory for resolving imports (default: dirname(filePath))
+  onDuplicateDeclarations: 'error', // Handle duplicate type names: 'error' (default), 'warn', 'silent'
+  // Note: rootType is not supported (generates schemas for all types)
+});
+
+toJsonSchemasFromFiles(entries, {
+  // entries: glob pattern (string) or array of file paths
+  // All options from toJsonSchemas, plus:
+  followImports: 'local',        // Follow imports: 'none' (default), 'local', 'all'
+  baseDir: './src',              // Base directory for resolving imports (default: cwd)
   onDuplicateDeclarations: 'error', // Handle duplicate type names: 'error' (default), 'warn', 'silent'
   // Note: rootType is not supported (generates schemas for all types)
 });
@@ -540,7 +615,7 @@ interface Settings {
 - `local`: Follows relative imports (`./` and `../`), skips `node_modules`
 - `all`: Reserved for future `node_modules` support (currently behaves like `local`)
 
-**Only available with file-based APIs** (`toJsonSchemaFromFile()` and `toJsonSchemasFromFile()`) — the string-based APIs (`toJsonSchema()` and `toJsonSchemas()`) do not support import resolution.
+**Only available with file-based APIs** (`toJsonSchemaFromFile()`, `toJsonSchemasFromFile()`, and `toJsonSchemasFromFiles()`) — the string-based APIs (`toJsonSchema()` and `toJsonSchemas()`) do not support import resolution.
 
 **Example:**
 ```typescript
@@ -629,6 +704,72 @@ toJsonSchemaFromFile('entry.ts', {
 1. Check if the types are structurally identical — if so, extract to a shared file
 2. If they're different but have the same name, rename one of them for clarity
 3. Use `warn` or `silent` mode only as a temporary workaround
+
+### `defineId` (optional)
+- **Type:** `(originalName: string, declaration: Declaration, context?: { absolutePath: string; relativePath: string }) => string`
+- **Default:** `undefined`
+- **Description:** Assigns a `$id` to each schema and uses external `$ref` instead of local `#/definitions/` refs
+
+When set on batch APIs (`toJsonSchemas`, `toJsonSchemasFromFile`, `toJsonSchemasFromFiles`):
+1. Each schema gets a `$id` field (the return value of the callback)
+2. Internal `$ref` pointers become external refs pointing to the `$id` of the referenced type
+3. The `definitions` block is omitted entirely
+4. The `$id` is used as the key in the returned `Record<string, JSONSchema>`
+
+This is designed for use with **AJV's global registry**, where schemas are registered by `$id` and cross-references are resolved at validation time.
+
+**Example with AJV:**
+```typescript
+import { toJsonSchemas } from "ts-source-to-json-schema";
+import Ajv from "ajv";
+
+const schemas = toJsonSchemas(`
+  interface User { id: string; name: string; }
+  interface Post { title: string; author: User; }
+`, {
+  defineId: (name) => \`schemas.\${name}\`
+});
+
+// schemas = {
+//   "schemas.User": {
+//     "$id": "schemas.User",
+//     "$schema": "...",
+//     "type": "object",
+//     "properties": { "id": { "type": "string" }, "name": { "type": "string" } }
+//   },
+//   "schemas.Post": {
+//     "$id": "schemas.Post",
+//     "$schema": "...",
+//     "type": "object",
+//     "properties": { "title": { "type": "string" }, "author": { "$ref": "schemas.User" } }
+//   }
+// }
+
+// Register all schemas with AJV
+const ajv = new Ajv();
+for (const schema of Object.values(schemas)) {
+  ajv.addSchema(schema);
+}
+
+// Validate — AJV resolves $ref: "schemas.User" from its global registry
+const validate = ajv.getSchema("schemas.Post");
+validate({ title: "Hello", author: { id: "1", name: "Joel" } }); // ✅
+```
+
+**With file context for namespacing:**
+```typescript
+const schemas = toJsonSchemasFromFiles('src/schemas/**/*.ts', {
+  followImports: 'local',
+  defineId: (name, decl, ctx) => {
+    const dir = ctx?.relativePath.replace(/\.ts$/, '').replace(/\//g, '.') ?? '';
+    return dir ? \`\${dir}.\${name}\` : name;
+  }
+});
+```
+
+**Can be combined with `defineNameTransform`** — both options are independent. `defineId` controls `$id`/external `$ref`, while `defineNameTransform` controls `$defs`/`#/definitions/` names.
+
+**Throws** if the callback returns duplicate `$id` values for different types.
 
 ## What it doesn't handle
 
