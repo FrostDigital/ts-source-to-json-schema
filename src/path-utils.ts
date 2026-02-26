@@ -270,6 +270,120 @@ function resolveDeepImport(packageDir: string, subPath: string): string | null {
 }
 
 /**
+ * Expand a glob pattern to matching file paths.
+ * Supports: *, **, and ? wildcards.
+ * Returns absolute paths sorted alphabetically.
+ */
+export function expandGlob(pattern: string): string[] {
+  // If no glob chars, return as-is (it's a literal path)
+  if (!/[*?]/.test(pattern)) {
+    const resolved = path.resolve(pattern);
+    return fs.existsSync(resolved) ? [resolved] : [];
+  }
+
+  // Split pattern into base dir (no globs) and glob part
+  const allParts = pattern.split(/[\\/]/);
+  let baseDir = ".";
+  let globParts: string[] = [];
+
+  for (let i = 0; i < allParts.length; i++) {
+    if (/[*?]/.test(allParts[i])) {
+      baseDir = allParts.slice(0, i).join(path.sep) || ".";
+      globParts = allParts.slice(i);
+      break;
+    }
+  }
+
+  const resolvedBase = path.resolve(baseDir);
+  if (!fs.existsSync(resolvedBase)) return [];
+
+  const results: string[] = [];
+  matchRecursive(resolvedBase, globParts, 0, results);
+  return results.sort();
+}
+
+/**
+ * Recursively match path segments against glob parts.
+ */
+function matchRecursive(
+  currentDir: string,
+  globParts: string[],
+  partIndex: number,
+  results: string[]
+): void {
+  if (partIndex >= globParts.length) return;
+
+  const part = globParts[partIndex];
+  const isLast = partIndex === globParts.length - 1;
+
+  if (part === "**") {
+    // ** matches zero or more directory levels
+    // Try matching zero levels (skip **)
+    if (partIndex + 1 < globParts.length) {
+      matchRecursive(currentDir, globParts, partIndex + 1, results);
+    }
+
+    // Try matching one or more levels
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        // Recurse into subdirectory, keeping ** active
+        matchRecursive(fullPath, globParts, partIndex, results);
+      } else if (isLast) {
+        // ** at end matches files too
+        results.push(fullPath);
+      }
+    }
+  } else {
+    // Regular segment with possible * or ? wildcards
+    const regex = globPartToRegex(part);
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      if (!regex.test(entry.name)) continue;
+
+      const fullPath = path.join(currentDir, entry.name);
+      if (isLast) {
+        if (entry.isFile()) {
+          results.push(fullPath);
+        }
+      } else if (entry.isDirectory()) {
+        matchRecursive(fullPath, globParts, partIndex + 1, results);
+      }
+    }
+  }
+}
+
+/**
+ * Convert a glob segment (e.g. "*.ts") to a regex.
+ */
+function globPartToRegex(part: string): RegExp {
+  let regex = "^";
+  for (const ch of part) {
+    if (ch === "*") regex += ".*";
+    else if (ch === "?") regex += ".";
+    else if (".+^${}()|[]\\".includes(ch)) regex += "\\" + ch;
+    else regex += ch;
+  }
+  regex += "$";
+  return new RegExp(regex);
+}
+
+/**
  * Try to resolve a module path with TypeScript extensions.
  * Tries in order: exact match, .ts, .tsx, .d.ts, index.ts, index.tsx, index.d.ts
  * Returns absolute path if found, null otherwise.

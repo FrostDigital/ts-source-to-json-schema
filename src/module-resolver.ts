@@ -38,6 +38,18 @@ export class ModuleResolver {
   }
 
   /**
+   * Resolve and parse modules starting from multiple entry files.
+   * Shared imports are resolved once (deduplication via visited Set).
+   */
+  resolveFromEntries(entryPaths: string[]): Declaration[] {
+    for (const entry of entryPaths) {
+      const normalized = path.resolve(entry);
+      this.resolveModule(normalized);
+    }
+    return this.mergeDeclarations();
+  }
+
+  /**
    * Get all resolved modules (for inspection/debugging)
    */
   getModules(): Map<string, ResolvedModule> {

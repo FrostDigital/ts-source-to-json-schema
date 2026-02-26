@@ -51,12 +51,16 @@ export type { ResolvedModule } from "./module-resolver.js";
 export { extractImports } from "./import-parser.js";
 export type { ImportStatement } from "./import-parser.js";
 
+export { expandGlob } from "./path-utils.js";
+
 import * as fs from "fs";
 import * as path from "path";
 import { tokenize } from "./tokenizer.js";
 import { Parser } from "./parser.js";
 import { Emitter, type JSONSchema, type EmitterOptions } from "./emitter.js";
 import { ModuleResolver } from "./module-resolver.js";
+import { expandGlob } from "./path-utils.js";
+import type { Declaration } from "./ast.js";
 
 /**
  * Convert TypeScript source containing type declarations to JSON Schema.
@@ -214,6 +218,76 @@ export function toJsonSchemasFromFile(
     onDuplicateDeclarations: options?.onDuplicateDeclarations,
   });
   const declarations = resolver.resolveFromEntry(entryPath);
+  const emitter = new Emitter(declarations, options || {});
+  return emitter.emitAll();
+}
+
+/**
+ * Generates JSON schemas for all types found across multiple TypeScript files.
+ *
+ * Accepts a glob pattern (string) or an array of file paths. When types across
+ * files share imports, shared types are resolved once and deduplicated.
+ *
+ * @param entries - Glob pattern (string) or array of file paths
+ * @param options - Schema generation options (rootType is ignored)
+ * @returns Map of type name to JSON schema
+ *
+ * @example
+ * ```ts
+ * // Glob pattern
+ * const schemas = toJsonSchemasFromFiles('src/schemas/*.ts', {
+ *   followImports: 'local'
+ * });
+ *
+ * // Array of paths
+ * const schemas = toJsonSchemasFromFiles([
+ *   'src/schemas/PostUserReq.ts',
+ *   'src/schemas/PostUserRes.ts'
+ * ], { followImports: 'local' });
+ * ```
+ */
+export function toJsonSchemasFromFiles(
+  entries: string | string[],
+  options?: Omit<EmitterOptions, 'rootType'>
+): Record<string, JSONSchema> {
+  // Resolve entries
+  let filePaths: string[];
+  if (typeof entries === "string") {
+    filePaths = expandGlob(entries);
+  } else {
+    filePaths = entries;
+  }
+
+  if (filePaths.length === 0) return {};
+
+  const followMode = options?.followImports ?? "none";
+  const baseDir = options?.baseDir ?? process.cwd();
+
+  if (followMode === "none") {
+    // Parse each file independently, merge results
+    const allDeclarations: Declaration[] = [];
+    for (const filePath of filePaths) {
+      const absPath = path.resolve(filePath);
+      const source = fs.readFileSync(absPath, "utf-8");
+      const tokens = tokenize(source);
+      const parser = new Parser(tokens);
+      const declarations = parser.parse();
+      for (const decl of declarations) {
+        (decl as any).sourceFile = absPath;
+      }
+      allDeclarations.push(...declarations);
+    }
+    const emitter = new Emitter(allDeclarations, options || {});
+    return emitter.emitAll();
+  }
+
+  // Multi-file mode with import resolution
+  const resolver = new ModuleResolver({
+    followImports: followMode,
+    baseDir,
+    onDuplicateDeclarations: options?.onDuplicateDeclarations,
+  });
+  const declarations = resolver.resolveFromEntries(filePaths);
   const emitter = new Emitter(declarations, options || {});
   return emitter.emitAll();
 }

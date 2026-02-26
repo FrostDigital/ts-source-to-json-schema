@@ -12,12 +12,13 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { toJsonSchema, toJsonSchemaFromFile, EmitterOptions } from './index.js';
+import { toJsonSchema, toJsonSchemaFromFile, toJsonSchemasFromFiles, EmitterOptions } from './index.js';
 
 interface CliOptions extends EmitterOptions {
   help?: boolean;
   version?: boolean;
   doctor?: boolean;
+  batch?: boolean;
   followImports?: "none" | "local" | "all";
   baseDir?: string;
 }
@@ -30,6 +31,7 @@ ts-source-to-json-schema v${version}
 
 USAGE:
   ts-source-to-json-schema <file.ts> [options]
+  ts-source-to-json-schema --batch <pattern|files...> [options]
 
 DESCRIPTION:
   Convert TypeScript type definitions to JSON Schema (2020-12 draft).
@@ -38,6 +40,7 @@ OPTIONS:
   -h, --help                     Show this help message
   -v, --version                  Show version number
       --doctor                   Output diagnostic information for debugging
+      --batch                    Batch mode: generate schemas for all types across files
 
   -r, --rootType <name>          Emit this type as root (others in $defs)
   -s, --includeSchema <bool>     Include $schema property (default: true)
@@ -70,12 +73,18 @@ EXAMPLES:
 
   # Combine options
   ts-source-to-json-schema src/user.ts -r User --strictObjects --followImports local
+
+  # Batch: all schemas from matching files
+  ts-source-to-json-schema --batch 'src/schemas/**/*.ts' --followImports local
+
+  # Batch: specific files
+  ts-source-to-json-schema --batch src/PostReq.ts src/PostRes.ts --followImports local
 `);
 }
 
-function parseArgs(args: string[]): { filePath: string | null; options: CliOptions } {
+function parseArgs(args: string[]): { filePaths: string[]; options: CliOptions } {
   const options: CliOptions = {};
-  let filePath: string | null = null;
+  const filePaths: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -86,6 +95,8 @@ function parseArgs(args: string[]): { filePath: string | null; options: CliOptio
       options.version = true;
     } else if (arg === '--doctor') {
       options.doctor = true;
+    } else if (arg === '--batch') {
+      options.batch = true;
     } else if (arg === '-r' || arg === '--rootType') {
       options.rootType = args[++i];
     } else if (arg === '-s' || arg === '--includeSchema') {
@@ -113,17 +124,11 @@ function parseArgs(args: string[]): { filePath: string | null; options: CliOptio
       console.error('Run with --help to see available options');
       process.exit(1);
     } else {
-      // First non-flag argument is the file path
-      if (!filePath) {
-        filePath = arg;
-      } else {
-        console.error(`Unexpected argument: ${arg}`);
-        process.exit(1);
-      }
+      filePaths.push(arg);
     }
   }
 
-  return { filePath, options };
+  return { filePaths, options };
 }
 
 function parseBoolean(value: string): boolean {
@@ -148,7 +153,7 @@ function main(): void {
     process.exit(0);
   }
 
-  const { filePath, options } = parseArgs(args);
+  const { filePaths, options } = parseArgs(args);
 
   // Handle special flags
   if (options.help) {
@@ -161,11 +166,50 @@ function main(): void {
     process.exit(0);
   }
 
+  // Batch mode
+  if (options.batch) {
+    if (filePaths.length === 0) {
+      console.error('Error: No input files specified for --batch mode');
+      console.error('Usage: ts-source-to-json-schema --batch <pattern|files...> [options]');
+      process.exit(1);
+    }
+
+    try {
+      const { help, version, doctor, batch, ...emitterOptions } = options;
+      const followMode = emitterOptions.followImports ?? 'local';
+
+      // If single argument with glob chars, pass as pattern string; otherwise as array
+      const entries = filePaths.length === 1 && /[*?]/.test(filePaths[0])
+        ? filePaths[0]
+        : filePaths;
+
+      const schemas = toJsonSchemasFromFiles(entries, {
+        ...emitterOptions,
+        followImports: followMode,
+      });
+
+      console.log(JSON.stringify(schemas, null, 2));
+    } catch (error) {
+      console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
+  // Single-file mode
+  const filePath = filePaths[0] ?? null;
+
   // Validate file path
   if (!filePath) {
     console.error('Error: No input file specified');
     console.error('Usage: ts-source-to-json-schema <file.ts> [options]');
     console.error('Run with --help for more information');
+    process.exit(1);
+  }
+
+  if (filePaths.length > 1) {
+    console.error('Error: Multiple files given without --batch flag');
+    console.error('Use --batch for multi-file mode: ts-source-to-json-schema --batch <files...>');
     process.exit(1);
   }
 
@@ -194,7 +238,7 @@ function main(): void {
 
   // Doctor mode: output comprehensive diagnostics
   if (options.doctor) {
-    const { help, version, doctor, ...emitterOptions } = options;
+    const { help, version, doctor, batch, ...emitterOptions } = options;
 
     const inputInfo: Record<string, unknown> = {
       filePath: filePath,
@@ -264,8 +308,8 @@ function main(): void {
   // Convert to JSON Schema
   let schema: unknown;
   try {
-    // Remove help, version, doctor from emitter options
-    const { help, version, doctor, ...emitterOptions } = options;
+    // Remove help, version, doctor, batch from emitter options
+    const { help, version, doctor, batch, ...emitterOptions } = options;
 
     // Determine followImports mode (default to 'local' in CLI)
     const followMode = emitterOptions.followImports ?? 'local';
