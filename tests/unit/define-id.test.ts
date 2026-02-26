@@ -261,4 +261,43 @@ describe("defineId option", () => {
     expect(schemas["s.User"].properties!.address).toEqual({ $ref: "s.Address" });
     expect(schemas["s.User"].definitions).toBeUndefined();
   });
+
+  it("should skip generic declarations with unresolved type parameters", () => {
+    const source = `
+      interface PaginatedResponse<T> {
+        items: T[];
+        total: number;
+      }
+      interface User { id: string; name: string; }
+    `;
+
+    const schemas = toJsonSchemas(source, {
+      defineId: (name) => `schemas.${name}`,
+    });
+
+    // Generic PaginatedResponse<T> should NOT be emitted
+    expect(schemas["schemas.PaginatedResponse"]).toBeUndefined();
+
+    // User should still be emitted
+    expect(schemas["schemas.User"]).toBeDefined();
+    expect(schemas["schemas.User"].$id).toBe("schemas.User");
+  });
+
+  it("should skip generic declarations in batch mode without defineId too", () => {
+    const source = `
+      interface PaginatedResponse<T> {
+        items: T[];
+        total: number;
+      }
+      interface User { id: string; name: string; }
+    `;
+
+    const schemas = toJsonSchemas(source);
+
+    // Generic PaginatedResponse<T> should NOT be emitted
+    expect(schemas["PaginatedResponse"]).toBeUndefined();
+
+    // User should still be emitted
+    expect(schemas["User"]).toBeDefined();
+  });
 });

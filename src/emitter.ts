@@ -417,6 +417,10 @@ export class Emitter {
     const schemas: Record<string, JSONSchema> = {};
 
     for (const [typeName, decl] of this.declarations) {
+      // Skip generic declarations (those with type parameters) unless they're referenced without type args
+      if (this.isGenericDeclaration(decl) && !this.isReferencedWithoutTypeArgs(typeName)) {
+        continue;
+      }
       const key = this.getDefineId(typeName) ?? this.getDefineName(typeName);
       schemas[key] = this.emitDeclarationStandalone(decl);
     }
