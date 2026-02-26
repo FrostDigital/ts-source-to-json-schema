@@ -112,6 +112,13 @@ export class Parser {
         continue;
       }
 
+      // Skip import statements
+      if (this.is("keyword", "import")) {
+        this.advance(); // consume 'import'
+        this.skipImport();
+        continue;
+      }
+
       // Skip 'export'
       const exported = !!this.match("keyword", "export");
 
@@ -150,6 +157,48 @@ export class Parser {
         this.advance();
       }
     }
+  }
+
+  private skipImport(): void {
+    // Skip import statement: import [type] ... from "path";
+    // Already consumed 'import' keyword
+
+    // Check for optional 'type' keyword
+    this.match("keyword", "type");
+
+    // Handle different import patterns
+    const next = this.peek();
+
+    // import * as X from "path"
+    if (next.type === "punctuation" && next.value === "*") {
+      this.advance(); // *
+      this.expect("keyword", "as");
+      this.expect("identifier"); // X
+    }
+    // import { ... } from "path"
+    else if (next.type === "punctuation" && next.value === "{") {
+      this.advance(); // {
+
+      // Skip everything until closing }
+      let depth = 1;
+      while (depth > 0 && !this.is("eof")) {
+        if (this.is("punctuation", "{")) depth++;
+        if (this.is("punctuation", "}")) depth--;
+        this.advance();
+      }
+    }
+    // import X from "path" or bare import "path"
+    else if (next.type === "identifier") {
+      this.advance(); // identifier
+    }
+
+    // Expect 'from "path"' (unless bare import)
+    if (this.match("keyword", "from")) {
+      this.expect("string"); // path
+    }
+
+    // Optional semicolon
+    this.match("punctuation", ";");
   }
 
   // ---------------------------------------------------------------------------
