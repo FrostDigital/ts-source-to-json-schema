@@ -221,6 +221,19 @@ describe("defineId with AJV integration", () => {
       `,
       );
 
+      // src/models/PaginatedResponse.ts — generic type
+      fs.writeFileSync(
+        path.join(modelsDir, "PaginatedResponse.ts"),
+        `
+        export interface PaginatedResponse<T> {
+          items: T[];
+          total: number;
+          page: number;
+          pageSize: number;
+        }
+      `,
+      );
+
       // src/api/CreatePostReq.ts — imports Post, uses Omit
       const apiDir = path.join(tempDir, "src", "api");
       fs.mkdirSync(apiDir, { recursive: true });
@@ -231,6 +244,16 @@ describe("defineId with AJV integration", () => {
         export interface CreatePostReq extends Omit<Post, "author"> {
           authorId: string;
         }
+      `,
+      );
+
+      // src/api/UserList.ts — imports PaginatedResponse and User, instantiates generic
+      fs.writeFileSync(
+        path.join(apiDir, "UserList.ts"),
+        `
+        import { PaginatedResponse } from "../models/PaginatedResponse";
+        import { User } from "../models/User";
+        export interface UserList extends PaginatedResponse<User> {}
       `,
       );
     });
@@ -318,6 +341,45 @@ describe("defineId with AJV integration", () => {
           title: "Hello",
           body: "World",
           // missing authorId
+        }),
+      ).toBe(false);
+
+      // Validate UserList — PaginatedResponse<User> instantiated inline
+      const userListKey = keys.find((k) => k.endsWith(".UserList"))!;
+      expect(userListKey).toContain("api");
+      expect(schemas[userListKey].$id).toBe(userListKey);
+
+      // PaginatedResponse<T> is generic, should NOT appear as its own schema
+      const paginatedKey = keys.find((k) => k.includes("PaginatedResponse"));
+      expect(paginatedKey).toBeUndefined();
+
+      const validateUserList = ajv.getSchema(userListKey)!;
+      expect(
+        validateUserList({
+          items: [
+            { id: "1", name: "Joel", email: "joel@test.com" },
+            { id: "2", name: "Anna", email: "anna@test.com" },
+          ],
+          total: 2,
+          page: 1,
+          pageSize: 10,
+        }),
+      ).toBe(true);
+
+      // Invalid: items contain invalid User (missing email)
+      expect(
+        validateUserList({
+          items: [{ id: "1", name: "Joel" }],
+          total: 1,
+          page: 1,
+          pageSize: 10,
+        }),
+      ).toBe(false);
+
+      // Invalid: missing required pagination fields
+      expect(
+        validateUserList({
+          items: [],
         }),
       ).toBe(false);
     });
