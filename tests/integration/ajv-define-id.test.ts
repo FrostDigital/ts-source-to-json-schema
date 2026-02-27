@@ -1,6 +1,9 @@
-import { describe, it, expect } from "@jest/globals";
+import { describe, it, expect, beforeAll, afterAll } from "@jest/globals";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
 import Ajv from "ajv";
-import { toJsonSchemas } from "../../src/index.js";
+import { toJsonSchemas, toJsonSchemasFromFiles } from "../../src/index.js";
 
 describe("defineId with AJV integration", () => {
   it("should validate cross-referencing schemas via AJV global registry", () => {
@@ -21,8 +24,12 @@ describe("defineId with AJV integration", () => {
 
     const validatePost = ajv.getSchema("schemas.Post")!;
 
-    expect(validatePost({ title: "Hello", author: { id: "1", name: "Joel" } })).toBe(true);
-    expect(validatePost({ title: "Hello", author: { id: 123, name: "Joel" } })).toBe(false);
+    expect(
+      validatePost({ title: "Hello", author: { id: "1", name: "Joel" } }),
+    ).toBe(true);
+    expect(
+      validatePost({ title: "Hello", author: { id: 123, name: "Joel" } }),
+    ).toBe(false);
     expect(validatePost({ title: "Hello" })).toBe(false); // author is required
   });
 
@@ -45,7 +52,9 @@ describe("defineId with AJV integration", () => {
     const validatePost = ajv.getSchema("schemas.Post")!;
 
     // Both title and author are required (non-optional)
-    expect(validatePost({ title: "Hello", author: { id: "1", name: "Joel" } })).toBe(true);
+    expect(
+      validatePost({ title: "Hello", author: { id: "1", name: "Joel" } }),
+    ).toBe(true);
     expect(validatePost({ title: "Hello" })).toBe(false);
     expect(validatePost({})).toBe(false);
   });
@@ -70,26 +79,34 @@ describe("defineId with AJV integration", () => {
 
     const validateFeed = ajv.getSchema("app.Feed")!;
 
-    expect(validateFeed({
-      posts: [{
-        title: "Hello",
-        author: {
-          name: "Joel",
-          address: { street: "123 Main", city: "Stockholm" },
-        },
-      }],
-    })).toBe(true);
+    expect(
+      validateFeed({
+        posts: [
+          {
+            title: "Hello",
+            author: {
+              name: "Joel",
+              address: { street: "123 Main", city: "Stockholm" },
+            },
+          },
+        ],
+      }),
+    ).toBe(true);
 
     // Invalid: address.city is not a string
-    expect(validateFeed({
-      posts: [{
-        title: "Hello",
-        author: {
-          name: "Joel",
-          address: { street: "123 Main", city: 42 },
-        },
-      }],
-    })).toBe(false);
+    expect(
+      validateFeed({
+        posts: [
+          {
+            title: "Hello",
+            author: {
+              name: "Joel",
+              address: { street: "123 Main", city: 42 },
+            },
+          },
+        ],
+      }),
+    ).toBe(false);
   });
 
   it("should validate self-referential types", () => {
@@ -112,13 +129,15 @@ describe("defineId with AJV integration", () => {
 
     const validate = ajv.getSchema("tree.TreeNode")!;
 
-    expect(validate({
-      value: "root",
-      children: [
-        { value: "child1" },
-        { value: "child2", children: [{ value: "grandchild" }] },
-      ],
-    })).toBe(true);
+    expect(
+      validate({
+        value: "root",
+        children: [
+          { value: "child1" },
+          { value: "child2", children: [{ value: "grandchild" }] },
+        ],
+      }),
+    ).toBe(true);
 
     expect(validate({ value: 42 })).toBe(false);
   });
@@ -164,6 +183,143 @@ describe("defineId with AJV integration", () => {
     const validate = ajv.getSchema("cfg.Config")!;
 
     expect(validate({ host: "localhost", port: 3000 })).toBe(true);
-    expect(validate({ host: "localhost", port: 3000, extra: true })).toBe(false);
+    expect(validate({ host: "localhost", port: 3000, extra: true })).toBe(
+      false,
+    );
+  });
+
+  describe("multi-file with file-path-based $id", () => {
+    let tempDir: string;
+
+    beforeAll(() => {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ajv-define-id-test-"));
+
+      // src/models/User.ts
+      const modelsDir = path.join(tempDir, "src", "models");
+      fs.mkdirSync(modelsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(modelsDir, "User.ts"),
+        `
+        export interface User {
+          id: string;
+          name: string;
+          email: string;
+        }
+      `,
+      );
+
+      // src/models/Post.ts — imports User
+      fs.writeFileSync(
+        path.join(modelsDir, "Post.ts"),
+        `
+        import { User } from "./User";
+        export interface Post {
+          title: string;
+          body: string;
+          author: User;
+        }
+      `,
+      );
+
+      // src/api/CreatePostReq.ts — imports Post, uses Omit
+      const apiDir = path.join(tempDir, "src", "api");
+      fs.mkdirSync(apiDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(apiDir, "CreatePostReq.ts"),
+        `
+        import { Post } from "../models/Post";
+        export interface CreatePostReq extends Omit<Post, "author"> {
+          authorId: string;
+        }
+      `,
+      );
+    });
+
+    afterAll(() => {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it("should use file path in $id and validate cross-file refs with AJV", () => {
+      const schemas = toJsonSchemasFromFiles(
+        path.join(tempDir, "src/**/*.ts"),
+        {
+          followImports: "local",
+          includeSchema: false,
+          defineId: (name, _decl, ctx) => {
+            if (!ctx) return name;
+            const fileStem = ctx.relativePath
+              .replace(/\.ts$/, "")
+              .replace(/\//g, ".");
+            return `${fileStem}.${name}`;
+          },
+        },
+      );
+
+      // Verify keys use file-path-based $id
+      const keys = Object.keys(schemas);
+      const userKey = keys.find((k) => k.endsWith(".User"))!;
+      const postKey = keys.find((k) => k.endsWith(".Post"))!;
+      const createPostKey = keys.find((k) => k.endsWith(".CreatePostReq"))!;
+
+      expect(userKey).toContain("models");
+      expect(postKey).toContain("models");
+      expect(createPostKey).toContain("api");
+
+      // Verify $id fields match keys
+      expect(schemas[userKey].$id).toBe(userKey);
+      expect(schemas[postKey].$id).toBe(postKey);
+      expect(schemas[createPostKey].$id).toBe(createPostKey);
+
+      // Verify Post references User via external $ref (not #/definitions/)
+      expect(schemas[postKey].properties!.author.$ref).toBe(userKey);
+      expect(schemas[postKey].definitions).toBeUndefined();
+
+      // Register all with AJV and validate
+      const ajv = new Ajv();
+      for (const schema of Object.values(schemas)) {
+        ajv.addSchema(schema);
+      }
+
+      // Validate User
+      const validateUser = ajv.getSchema(userKey)!;
+      expect(
+        validateUser({ id: "1", name: "Joel", email: "joel@test.com" }),
+      ).toBe(true);
+      expect(validateUser({ id: "1", name: "Joel" })).toBe(false); // missing email
+
+      // Validate Post — AJV resolves User from registry
+      const validatePost = ajv.getSchema(postKey)!;
+      expect(
+        validatePost({
+          title: "Hello",
+          body: "World",
+          author: { id: "1", name: "Joel", email: "joel@test.com" },
+        }),
+      ).toBe(true);
+      expect(
+        validatePost({
+          title: "Hello",
+          body: "World",
+          author: { id: "1", name: "Joel" }, // missing email
+        }),
+      ).toBe(false);
+
+      // Validate CreatePostReq — Omit<Post, "author"> + authorId
+      const validateCreatePost = ajv.getSchema(createPostKey)!;
+      expect(
+        validateCreatePost({
+          title: "Hello",
+          body: "World",
+          authorId: "user-1",
+        }),
+      ).toBe(true);
+      expect(
+        validateCreatePost({
+          title: "Hello",
+          body: "World",
+          // missing authorId
+        }),
+      ).toBe(false);
+    });
   });
 });
