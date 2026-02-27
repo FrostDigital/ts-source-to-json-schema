@@ -39,6 +39,8 @@ describe("defineId option", () => {
       defineId: (name) => `schemas.${name}`,
     });
 
+    console.log(JSON.stringify(schemas, null, 2));
+
     // Post should reference User via external $ref
     expect(schemas["schemas.Post"].properties).toMatchObject({
       title: { type: "string" },
@@ -91,7 +93,7 @@ describe("defineId option", () => {
     });
 
     expect(schemas["schemas.User"].$schema).toBe(
-      "https://json-schema.org/draft/2020-12/schema"
+      "https://json-schema.org/draft/2020-12/schema",
     );
   });
 
@@ -136,7 +138,7 @@ describe("defineId option", () => {
     expect(() =>
       toJsonSchemas(source, {
         defineId: () => "same-id",
-      })
+      }),
     ).toThrow(/defineId produced duplicate id "same-id"/);
   });
 
@@ -145,8 +147,10 @@ describe("defineId option", () => {
 
     expect(() =>
       toJsonSchemas(source, {
-        defineId: () => { throw new Error("boom"); },
-      })
+        defineId: () => {
+          throw new Error("boom");
+        },
+      }),
     ).toThrow(/defineId callback threw error for type "User": boom/);
   });
 
@@ -171,7 +175,7 @@ describe("defineId option", () => {
         { name: "User", kind: "interface" },
         { name: "UserId", kind: "type_alias" },
         { name: "Role", kind: "enum" },
-      ])
+      ]),
     );
   });
 
@@ -258,7 +262,9 @@ describe("defineId option", () => {
     expect(schemas["s.Post"].definitions).toBeUndefined();
 
     // User → Address (external $ref)
-    expect(schemas["s.User"].properties!.address).toEqual({ $ref: "s.Address" });
+    expect(schemas["s.User"].properties!.address).toEqual({
+      $ref: "s.Address",
+    });
     expect(schemas["s.User"].definitions).toBeUndefined();
   });
 
