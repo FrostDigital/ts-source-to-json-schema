@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import Ajv from "ajv";
+import addFormats from "ajv-formats";
 import { toJsonSchemas, toJsonSchemasFromFiles } from "../../src/index.js";
 
 describe("defineId with AJV integration", () => {
@@ -247,13 +248,16 @@ describe("defineId with AJV integration", () => {
       `,
       );
 
-      // src/api/UserList.ts — imports PaginatedResponse and User, instantiates generic
+      // src/api/UserList.ts — imports PaginatedResponse and User, uses generic as property
       fs.writeFileSync(
         path.join(apiDir, "UserList.ts"),
         `
         import { PaginatedResponse } from "../models/PaginatedResponse";
         import { User } from "../models/User";
-        export interface UserList extends PaginatedResponse<User> {}
+        export interface UserList {
+          time: Date;
+          page: PaginatedResponse<User>;
+        }
       `,
       );
     });
@@ -297,8 +301,8 @@ describe("defineId with AJV integration", () => {
       expect(schemas[postKey].properties!.author.$ref).toBe(userKey);
       expect(schemas[postKey].definitions).toBeUndefined();
 
-      // Register all with AJV and validate
-      const ajv = new Ajv();
+      // Register all with AJV (with format support for Date → date-time)
+      const ajv = addFormats(new Ajv());
       for (const schema of Object.values(schemas)) {
         ajv.addSchema(schema);
       }
@@ -344,7 +348,7 @@ describe("defineId with AJV integration", () => {
         }),
       ).toBe(false);
 
-      // Validate UserList — PaginatedResponse<User> instantiated inline
+      // Validate UserList — has time: Date and page: PaginatedResponse<User> (instantiated inline)
       const userListKey = keys.find((k) => k.endsWith(".UserList"))!;
       expect(userListKey).toContain("api");
       expect(schemas[userListKey].$id).toBe(userListKey);
@@ -356,30 +360,44 @@ describe("defineId with AJV integration", () => {
       const validateUserList = ajv.getSchema(userListKey)!;
       expect(
         validateUserList({
-          items: [
-            { id: "1", name: "Joel", email: "joel@test.com" },
-            { id: "2", name: "Anna", email: "anna@test.com" },
-          ],
-          total: 2,
-          page: 1,
-          pageSize: 10,
+          time: "2026-02-26T10:00:00.000Z",
+          page: {
+            items: [
+              { id: "1", name: "Joel", email: "joel@test.com" },
+              { id: "2", name: "Anna", email: "anna@test.com" },
+            ],
+            total: 2,
+            page: 1,
+            pageSize: 10,
+          },
         }),
       ).toBe(true);
 
-      // Invalid: items contain invalid User (missing email)
+      // Invalid: page.items contain invalid User (missing email)
       expect(
         validateUserList({
-          items: [{ id: "1", name: "Joel" }],
-          total: 1,
-          page: 1,
-          pageSize: 10,
+          time: "2026-02-26T10:00:00.000Z",
+          page: {
+            items: [{ id: "1", name: "Joel" }],
+            total: 1,
+            page: 1,
+            pageSize: 10,
+          },
         }),
       ).toBe(false);
 
-      // Invalid: missing required pagination fields
+      // Invalid: missing required page field
       expect(
         validateUserList({
-          items: [],
+          time: "2026-02-26T10:00:00.000Z",
+        }),
+      ).toBe(false);
+
+      // Invalid: time is not a date-time string
+      expect(
+        validateUserList({
+          time: 12345,
+          page: { items: [], total: 0, page: 1, pageSize: 10 },
         }),
       ).toBe(false);
     });
