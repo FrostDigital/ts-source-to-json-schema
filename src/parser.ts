@@ -701,6 +701,17 @@ export class Parser {
   private parseTypeReference(): TypeNode {
     const name = this.advance().value;
 
+    // Check for member access (EnumName.MemberName)
+    if (this.is("punctuation", ".")) {
+      this.advance(); // consume '.'
+      const memberName = this.expect("identifier").value;
+      return {
+        kind: "enum_member_access",
+        enumName: name,
+        memberName: memberName,
+      };
+    }
+
     // Generic type arguments: Foo<Bar, Baz>
     let typeArgs: TypeNode[] | undefined;
     if (this.is("punctuation", "<")) {

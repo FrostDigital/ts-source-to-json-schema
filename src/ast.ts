@@ -30,6 +30,7 @@ export type TypeNode =
   | { kind: "union"; members: TypeNode[] }
   | { kind: "intersection"; members: TypeNode[] }
   | { kind: "reference"; name: string; typeArgs?: TypeNode[] }
+  | { kind: "enum_member_access"; enumName: string; memberName: string }
   | { kind: "parenthesized"; inner: TypeNode }
   | { kind: "template_literal"; parts: (string | TypeNode)[] }
   | { kind: "record"; keyType: TypeNode; valueType: TypeNode }

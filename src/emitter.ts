@@ -924,6 +924,9 @@ export class Emitter {
       case "reference":
         return this.emitReference(node);
 
+      case "enum_member_access":
+        return this.emitEnumMemberAccess(node);
+
       case "parenthesized":
         return this.emitType(node.inner);
 
@@ -1114,6 +1117,28 @@ export class Emitter {
     // If the declaration exists and is simple, we could inline it,
     // but using $ref is more correct and handles circular refs
     return { $ref: `#/$defs/${this.getDefineName(node.name)}` };
+  }
+
+  private emitEnumMemberAccess(node: { kind: "enum_member_access"; enumName: string; memberName: string }): JSONSchema {
+    // Find the enum declaration by original name
+    const enumDecl = this.declarations.get(node.enumName);
+
+    if (!enumDecl || enumDecl.kind !== "enum") {
+      // Enum not found - fall back to reference
+      // This could happen with cross-file references not yet supported
+      return { $ref: `#/$defs/${this.getDefineName(node.enumName)}` };
+    }
+
+    // Find the member in the enum
+    const member = enumDecl.members.find((m) => m.name === node.memberName);
+
+    if (!member) {
+      // Member not found - fall back to reference
+      return { $ref: `#/$defs/${this.getDefineName(node.enumName)}` };
+    }
+
+    // Emit as const with the member's value
+    return { const: member.value };
   }
 
   private emitRecord(keyType: TypeNode, valueType: TypeNode): JSONSchema {
