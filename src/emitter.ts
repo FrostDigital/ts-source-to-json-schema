@@ -615,7 +615,7 @@ export class Emitter {
    */
   private isBuiltInType(name: string): boolean {
     const builtIns = [
-      "Date", "Promise", "Array", "Set", "Map", "Record",
+      "Date", "Buffer", "Promise", "Array", "Set", "Map", "Record",
       "Partial", "Required", "Pick", "Omit", "Readonly", "NonNullable"
     ];
     return builtIns.includes(name);
@@ -1101,6 +1101,11 @@ export class Emitter {
     // Handle built-in Date type
     if (node.name === "Date" && !node.typeArgs) {
       return { type: "string", format: "date-time" };
+    }
+
+    // Handle Buffer type (serialized as base64 string)
+    if (node.name === "Buffer" && !node.typeArgs) {
+      return { type: "string" };
     }
 
     // Handle type arguments (generics and utility types)

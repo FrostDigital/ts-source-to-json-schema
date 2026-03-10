@@ -95,5 +95,23 @@ describe('Primitive Types', () => {
 
       expect(schema).toEqual({ not: {} });
     });
+
+    it('should handle Buffer type as string', () => {
+      const schema = toJsonSchema(`
+        interface FileUpload {
+          name: string;
+          data: Buffer;
+        }
+      `, { rootType: 'FileUpload', includeSchema: false });
+
+      expect(schema).toEqual({
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          data: { type: 'string' },
+        },
+        required: ['name', 'data'],
+      });
+    });
   });
 });
