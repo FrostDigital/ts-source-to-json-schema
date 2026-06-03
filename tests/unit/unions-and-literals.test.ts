@@ -131,4 +131,65 @@ describe('Unions and Literal Types', () => {
       });
     });
   });
+
+  describe('Interspersed JSDoc comments (issue #78)', () => {
+    it('should not drop union members after an interspersed JSDoc comment', () => {
+      const schema = toJsonSchema(`
+        export type Status =
+          | "a"
+          | "b"
+          /**
+           * This doc comment must not break generation.
+           */
+          | "c"
+          | "d";
+      `, { rootType: 'Status', includeSchema: false });
+
+      expect(schema).toEqual({
+        type: 'string',
+        enum: ['a', 'b', 'c', 'd'],
+      });
+    });
+
+    it('should handle a JSDoc comment before every member', () => {
+      const schema = toJsonSchema(`
+        export type Status =
+          /** first */
+          | "a"
+          /** second */
+          | "b"
+          /** third */
+          | "c";
+      `, { rootType: 'Status', includeSchema: false });
+
+      expect(schema).toEqual({
+        type: 'string',
+        enum: ['a', 'b', 'c'],
+      });
+    });
+
+    it('should keep object union members separated by JSDoc comments', () => {
+      const schema = toJsonSchema(`
+        export type Shape =
+          | { kind: "circle" }
+          /** a square */
+          | { kind: "square" };
+      `, { rootType: 'Shape', includeSchema: false });
+
+      expect(schema.anyOf).toHaveLength(2);
+    });
+
+    it('should not consume the type alias JSDoc as a member doc', () => {
+      const schema = toJsonSchema(`
+        /** This documents the alias itself */
+        export type Status = "a" | "b";
+      `, { rootType: 'Status', includeSchema: false });
+
+      expect(schema).toEqual({
+        type: 'string',
+        enum: ['a', 'b'],
+        description: 'This documents the alias itself',
+      });
+    });
+  });
 });

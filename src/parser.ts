@@ -550,20 +550,70 @@ export class Parser {
   }
 
   private parseUnion(): TypeNode {
-    // Handle leading |
+    // Handle a leading `|` and/or JSDoc preceding the first member, in any
+    // order (e.g. `| /** doc *​/ "a"` or `/** doc *​/ | "a"`).
+    this.skipInterspersedJSDoc();
     this.match("punctuation", "|");
+    this.skipInterspersedJSDoc();
 
     let left = this.parseIntersection();
 
-    if (this.is("punctuation", "|")) {
+    if (this.isUnionContinuation()) {
       const members = [left];
-      while (this.match("punctuation", "|")) {
+      while (this.matchUnionContinuation()) {
+        // A JSDoc comment may be interspersed before a member; skip it so the
+        // member is still collected (see parser comment in skipInterspersedJSDoc).
+        this.skipInterspersedJSDoc();
         members.push(this.parseIntersection());
       }
       return { kind: "union", members };
     }
 
     return left;
+  }
+
+  /**
+   * Looks ahead, skipping any JSDoc comments, for a union continuation `|`.
+   * Per-member JSDoc comments inside a union (e.g. `| "a" /** doc *​/ | "b"`)
+   * would otherwise sit between members and prematurely terminate the union,
+   * silently dropping every member after the comment.
+   */
+  private isUnionContinuation(): boolean {
+    let p = this.pos;
+    while (
+      p < this.tokens.length &&
+      (this.tokens[p].type === "newline" || this.tokens[p].type === "jsdoc")
+    ) {
+      p++;
+    }
+    const tok = this.tokens[p];
+    return !!tok && tok.type === "punctuation" && tok.value === "|";
+  }
+
+  /** Consumes any interspersed JSDoc, then the continuation `|` if present. */
+  private matchUnionContinuation(): boolean {
+    if (!this.isUnionContinuation()) return false;
+    this.skipInterspersedJSDoc();
+    this.match("punctuation", "|");
+    return true;
+  }
+
+  /** Skips JSDoc tokens (per-member docs are ignored for union members). */
+  private skipInterspersedJSDoc(): void {
+    while (this.peek().type === "jsdoc") {
+      this.advanceIncludingJSDoc();
+    }
+  }
+
+  /** Like advance() but also skips leading JSDoc tokens. */
+  private advanceIncludingJSDoc(): Token {
+    while (
+      this.pos < this.tokens.length &&
+      (this.tokens[this.pos].type === "newline")
+    ) {
+      this.pos++;
+    }
+    return this.tokens[this.pos++];
   }
 
   private parseIntersection(): TypeNode {
