@@ -66,6 +66,16 @@ export interface EmitterOptions {
    */
   onDuplicateDeclarations?: 'error' | 'warn' | 'silent';
   /**
+   * How to handle $ref pointers to types that are not defined in the output.
+   * Dangling references typically come from typos, or from imports that were
+   * not followed (followImports: "none").
+   * - 'error': Throw an error listing the unresolved type names
+   * - 'warn': Emit the schema, log a warning
+   * - 'ignore': Emit the schema as-is (default, backward compatible)
+   * Default: 'ignore'
+   */
+  onUnresolvedReferences?: 'error' | 'warn' | 'ignore';
+  /**
    * Callback to transform type names in $defs and $ref pointers.
    * Useful for namespacing types by file, adding prefixes/suffixes, or custom naming schemes.
    *
@@ -238,6 +248,7 @@ export class Emitter {
       followImports: options.followImports ?? "none",
       baseDir: options.baseDir ?? "",
       onDuplicateDeclarations: options.onDuplicateDeclarations ?? "error",
+      onUnresolvedReferences: options.onUnresolvedReferences ?? "ignore",
       defineNameTransform: options.defineNameTransform,
       defineId: options.defineId,
     };
@@ -252,50 +263,12 @@ export class Emitter {
   }
 
   /**
-   * Check if a declaration is generic (has type parameters like T, U, V, W)
+   * Check if a declaration is generic (declares type parameters like <T, U>)
    */
   private isGenericDeclaration(decl: Declaration): boolean {
-    const typeParamNames = ['T', 'U', 'V', 'W', 'K', 'TKey', 'TValue'];
-
-    const hasTypeParamRef = (typeNode: TypeNode): boolean => {
-      switch (typeNode.kind) {
-        case "reference":
-          // Check if this references a type parameter
-          if (typeParamNames.includes(typeNode.name)) {
-            return true;
-          }
-          // Check type arguments
-          if (typeNode.typeArgs) {
-            return typeNode.typeArgs.some(hasTypeParamRef);
-          }
-          return false;
-        case "array":
-          return hasTypeParamRef(typeNode.element);
-        case "object":
-          return typeNode.properties.some(p => hasTypeParamRef(p.type)) ||
-                 (typeNode.indexSignature ? hasTypeParamRef(typeNode.indexSignature.valueType) : false);
-        case "union":
-          return typeNode.members.some(hasTypeParamRef);
-        case "intersection":
-          return typeNode.members.some(hasTypeParamRef);
-        case "tuple":
-          return typeNode.elements.some(e => hasTypeParamRef(e.type));
-        case "record":
-          return hasTypeParamRef(typeNode.keyType) || hasTypeParamRef(typeNode.valueType);
-        case "parenthesized":
-          return hasTypeParamRef(typeNode.inner);
-        default:
-          return false;
-      }
-    };
-
-    if (decl.kind === "interface") {
-      return decl.properties.some(p => hasTypeParamRef(p.type)) ||
-             (decl.indexSignature ? hasTypeParamRef(decl.indexSignature.valueType) : false);
-    } else if (decl.kind === "type_alias") {
-      return hasTypeParamRef(decl.type);
+    if (decl.kind === "interface" || decl.kind === "type_alias") {
+      return !!decl.typeParams && decl.typeParams.length > 0;
     }
-
     return false; // Enums can't be generic
   }
 
@@ -383,6 +356,7 @@ export class Emitter {
           result.$schema = this.options.schemaVersion;
         }
         result.$defs = defs;
+        this.checkUnresolvedReferences(result);
         return result;
       }
 
@@ -396,6 +370,7 @@ export class Emitter {
       if (Object.keys(defs).length > 0) {
         result.$defs = defs;
       }
+      this.checkUnresolvedReferences(result);
       return result;
     }
 
@@ -405,7 +380,66 @@ export class Emitter {
       result.$schema = this.options.schemaVersion;
     }
     result.$defs = defs;
+    this.checkUnresolvedReferences(result);
     return result;
+  }
+
+  /**
+   * Verifies that every local $ref in the final schema points at a definition
+   * that actually exists, honoring the onUnresolvedReferences option.
+   */
+  private checkUnresolvedReferences(schema: JSONSchema, context?: string): void {
+    const mode = this.options.onUnresolvedReferences;
+    if (mode === "ignore") return;
+
+    const available = new Set<string>([
+      ...Object.keys(schema.$defs ?? {}),
+      ...Object.keys((schema.definitions as Record<string, JSONSchema> | undefined) ?? {}),
+    ]);
+
+    const refs = this.collectLocalRefTargets(schema);
+    const missing = [...new Set(refs)].filter((name) => !available.has(name)).sort();
+    if (missing.length === 0) return;
+
+    const message =
+      `Unresolved type reference${missing.length > 1 ? "s" : ""}` +
+      `${context ? ` in schema "${context}"` : ""}: ${missing.join(", ")}. ` +
+      `The referenced type(s) are not defined in the provided source. ` +
+      `Define them, enable followImports, or set onUnresolvedReferences to "warn" or "ignore".`;
+
+    if (mode === "error") {
+      throw new Error(message);
+    }
+    console.warn(message);
+  }
+
+  /**
+   * Collects the type names targeted by local $ref pointers
+   * (#/$defs/Name or #/definitions/Name) anywhere in a schema.
+   */
+  private collectLocalRefTargets(schema: JSONSchema): string[] {
+    const refs: string[] = [];
+
+    const walk = (obj: unknown): void => {
+      if (typeof obj !== "object" || obj === null) return;
+
+      const ref = (obj as JSONSchema).$ref;
+      if (typeof ref === "string") {
+        const match = ref.match(/^#\/(?:\$defs|definitions)\/(.+)$/);
+        if (match) refs.push(match[1]);
+      }
+
+      for (const value of Object.values(obj)) {
+        if (Array.isArray(value)) {
+          value.forEach(walk);
+        } else if (typeof value === "object" && value !== null) {
+          walk(value);
+        }
+      }
+    };
+
+    walk(schema);
+    return refs;
   }
 
   /**
@@ -423,6 +457,7 @@ export class Emitter {
       }
       const key = this.getDefineId(typeName) ?? this.getDefineName(typeName);
       schemas[key] = this.emitDeclarationStandalone(decl);
+      this.checkUnresolvedReferences(schemas[key], key);
     }
 
     return schemas;
@@ -933,6 +968,9 @@ export class Emitter {
       case "record":
         return this.emitRecord(node.keyType, node.valueType);
 
+      case "function":
+        return {}; // functions are not representable in JSON Schema
+
       case "template_literal":
         return { type: "string" }; // Best we can do without regex generation
 
@@ -961,12 +999,22 @@ export class Emitter {
     }
   }
 
+  /** True if the node is a function type, possibly wrapped in parentheses. */
+  private isFunctionTypeNode(node: TypeNode): boolean {
+    if (node.kind === "function") return true;
+    if (node.kind === "parenthesized") return this.isFunctionTypeNode(node.inner);
+    return false;
+  }
+
   private emitObjectType(properties: PropertyNode[], indexSignature?: IndexSignatureNode, tags?: Record<string, string>): JSONSchema {
     const schema: JSONSchema = { type: "object" };
     const props: Record<string, JSONSchema> = {};
     const required: string[] = [];
 
     for (const prop of properties) {
+      // Function-typed properties have no JSON Schema representation - omit them
+      if (this.isFunctionTypeNode(prop.type)) continue;
+
       const propSchema = this.emitType(prop.type);
 
       // Apply JSDoc tags
@@ -1260,17 +1308,25 @@ export class Emitter {
   }
 
   /**
-   * Instantiate a generic interface with concrete type arguments
+   * Map a declaration's type parameter names to concrete type arguments.
+   * Falls back to conventional names (T, U, V, W) for declarations that
+   * were constructed without typeParams (e.g. hand-built ASTs).
    */
-  private instantiateInterface(decl: InterfaceDeclaration, typeArgs: TypeNode[]): JSONSchema {
-    // Build type parameter mapping
-    // LIMITATION: We assume conventional param names (T, U, V, W)
-    // since we don't parse type parameter declarations yet
+  private buildTypeParamMap(typeParams: string[] | undefined, typeArgs: TypeNode[]): Map<string, TypeNode> {
+    const paramNames = typeParams && typeParams.length > 0 ? typeParams : ['T', 'U', 'V', 'W'];
     const typeParamMap = new Map<string, TypeNode>();
-    const paramNames = ['T', 'U', 'V', 'W'];
     for (let i = 0; i < Math.min(typeArgs.length, paramNames.length); i++) {
       typeParamMap.set(paramNames[i], typeArgs[i]);
     }
+    return typeParamMap;
+  }
+
+  /**
+   * Instantiate a generic interface with concrete type arguments
+   */
+  private instantiateInterface(decl: InterfaceDeclaration, typeArgs: TypeNode[]): JSONSchema {
+    // Map the declaration's type parameter names to the provided type arguments
+    const typeParamMap = this.buildTypeParamMap(decl.typeParams, typeArgs);
 
     // Substitute type parameters in all properties
     const instantiatedProps = decl.properties.map(prop => ({
@@ -1312,12 +1368,8 @@ export class Emitter {
    * Instantiate a generic type alias with concrete type arguments
    */
   private instantiateTypeAlias(decl: TypeAliasDeclaration, typeArgs: TypeNode[]): JSONSchema {
-    // Build type parameter mapping (same as interface)
-    const typeParamMap = new Map<string, TypeNode>();
-    const paramNames = ['T', 'U', 'V', 'W'];
-    for (let i = 0; i < Math.min(typeArgs.length, paramNames.length); i++) {
-      typeParamMap.set(paramNames[i], typeArgs[i]);
-    }
+    // Map the declaration's type parameter names to the provided type arguments
+    const typeParamMap = this.buildTypeParamMap(decl.typeParams, typeArgs);
 
     // Substitute type parameters in the aliased type
     const instantiatedType = this.substituteTypeParams(decl.type, typeParamMap);

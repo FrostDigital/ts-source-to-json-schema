@@ -191,6 +191,33 @@ export class Parser {
     }
   }
 
+  private parseTypeParameters(): string[] | undefined {
+    // Parse generic param names: interface Foo<T, U extends Bar, V = string>
+    // Constraints and defaults are skipped; only the parameter names are kept.
+    if (!this.match("punctuation", "<")) return undefined;
+
+    const names: string[] = [];
+    let depth = 1;
+    let expectName = true;
+
+    while (depth > 0 && !this.is("eof")) {
+      if (this.is("punctuation", "<")) {
+        depth++;
+      } else if (this.is("punctuation", ">")) {
+        depth--;
+        if (depth === 0) { this.advance(); break; }
+      } else if (depth === 1 && this.is("punctuation", ",")) {
+        expectName = true;
+      } else if (depth === 1 && expectName && this.is("identifier")) {
+        names.push(this.peek().value);
+        expectName = false;
+      }
+      this.advance();
+    }
+
+    return names.length > 0 ? names : undefined;
+  }
+
   private isReExport(): boolean {
     // Look ahead to detect: export { ... } from "path" or export * from "path"
     // or export type { ... } from "path"
@@ -353,9 +380,8 @@ export class Parser {
     this.expect("keyword", "interface");
     const name = this.expect("identifier").value;
 
-    // Skip type parameters if present (e.g., <T, U>)
-    // We don't parse them yet, but need to skip them to avoid parse errors
-    this.skipTypeParameters();
+    // Parse type parameters if present (e.g., <T, U>)
+    const typeParams = this.parseTypeParameters();
 
     // extends clause
     let extendsTypes: TypeNode[] | undefined;
@@ -371,6 +397,7 @@ export class Parser {
     return {
       kind: "interface",
       name,
+      typeParams,
       extends: extendsTypes,
       properties,
       indexSignature,
@@ -389,8 +416,8 @@ export class Parser {
     this.expect("keyword", "type");
     const name = this.expect("identifier").value;
 
-    // Skip type parameters if present (e.g., <T, U>)
-    this.skipTypeParameters();
+    // Parse type parameters if present (e.g., <T, U>)
+    const typeParams = this.parseTypeParameters();
 
     this.expect("punctuation", "=");
     const type = this.parseType();
@@ -401,6 +428,7 @@ export class Parser {
     return {
       kind: "type_alias",
       name,
+      typeParams,
       type,
       description: jsdoc?.description,
       tags: jsdoc?.tags,
@@ -489,10 +517,28 @@ export class Parser {
         continue;
       }
 
+      // Call signature: (): T - not representable in JSON Schema, skip
+      if (this.is("punctuation", "(")) {
+        this.skipMethodSignature();
+        this.match("punctuation", ";");
+        this.match("punctuation", ",");
+        continue;
+      }
+
       // Regular property
       const readonly = !!this.match("keyword", "readonly");
       const propName = this.advance().value; // identifier or string
       const optional = !!this.match("punctuation", "?");
+
+      // Method signature: name(...): T or name<T>(...): T - skip, functions
+      // have no JSON Schema representation
+      if (this.is("punctuation", "(") || this.is("punctuation", "<")) {
+        this.skipMethodSignature();
+        this.match("punctuation", ";");
+        this.match("punctuation", ",");
+        continue;
+      }
+
       this.expect("punctuation", ":");
       const propType = this.parseType();
 
@@ -512,6 +558,76 @@ export class Parser {
 
     this.expect("punctuation", "}");
     return { properties, indexSignature };
+  }
+
+  /**
+   * Skips a method/call signature: [<TypeParams>] (params) [: ReturnType]
+   * Assumes the property name and optional `?` have already been consumed.
+   */
+  private skipMethodSignature(): void {
+    this.skipTypeParameters();
+
+    if (this.match("punctuation", "(")) {
+      let depth = 1;
+      while (depth > 0 && !this.is("eof")) {
+        if (this.is("punctuation", "(")) depth++;
+        if (this.is("punctuation", ")")) depth--;
+        this.advance();
+      }
+    }
+
+    // Return type annotation
+    if (this.match("punctuation", ":")) {
+      this.parseType();
+    }
+  }
+
+  /**
+   * Looks ahead to determine whether the `(` at the current position starts
+   * a function type, i.e. `(params) => ReturnType`, rather than a
+   * parenthesized type.
+   */
+  private peekIsFunctionType(): boolean {
+    let p = this.pos;
+    while (p < this.tokens.length && this.tokens[p].type === "newline") p++;
+    if (this.tokens[p]?.value !== "(") return false;
+
+    // Find the matching closing paren
+    let depth = 0;
+    while (p < this.tokens.length) {
+      const t = this.tokens[p];
+      if (t.type === "punctuation" && t.value === "(") depth++;
+      if (t.type === "punctuation" && t.value === ")") {
+        depth--;
+        if (depth === 0) break;
+      }
+      p++;
+    }
+    if (depth !== 0) return false;
+
+    // Check for `=>` after the closing paren (tokenized as `=` then `>`)
+    p++;
+    while (p < this.tokens.length && this.tokens[p].type === "newline") p++;
+    return this.tokens[p]?.value === "=" && this.tokens[p + 1]?.value === ">";
+  }
+
+  /**
+   * Parses (and mostly discards) a function type: (params) => ReturnType.
+   * Functions have no JSON Schema representation, so this returns a
+   * `function` node that the emitter ignores.
+   */
+  private parseFunctionType(): TypeNode {
+    this.expect("punctuation", "(");
+    let depth = 1;
+    while (depth > 0 && !this.is("eof")) {
+      if (this.is("punctuation", "(")) depth++;
+      if (this.is("punctuation", ")")) depth--;
+      this.advance();
+    }
+    this.expect("punctuation", "=");
+    this.expect("punctuation", ">");
+    this.parseType(); // return type (discarded)
+    return { kind: "function" };
   }
 
   private peekIsIndexSignature(): boolean {
@@ -681,6 +797,11 @@ export class Parser {
     if (token.type === "number") {
       this.advance();
       return { kind: "literal_number", value: Number(token.value) };
+    }
+
+    // Function type: (value: string) => void
+    if (this.is("punctuation", "(") && this.peekIsFunctionType()) {
+      return this.parseFunctionType();
     }
 
     // Parenthesized type: (string | number)

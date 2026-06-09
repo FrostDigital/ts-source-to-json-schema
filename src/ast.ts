@@ -33,6 +33,7 @@ export type TypeNode =
   | { kind: "enum_member_access"; enumName: string; memberName: string }
   | { kind: "parenthesized"; inner: TypeNode }
   | { kind: "template_literal"; parts: (string | TypeNode)[] }
+  | { kind: "function" } // function/method types - not representable in JSON Schema
   | { kind: "record"; keyType: TypeNode; valueType: TypeNode }
   | { kind: "mapped"; keyName: string; constraint: TypeNode; valueType: TypeNode; optional?: boolean };
 
@@ -53,6 +54,7 @@ export interface InterfaceDeclaration {
   kind: "interface";
   name: string;
   sourceFile?: string;
+  typeParams?: string[]; // generic type parameter names, e.g. ["T", "U"]
   extends?: TypeNode[];
   properties: PropertyNode[];
   indexSignature?: IndexSignatureNode;
@@ -65,6 +67,7 @@ export interface TypeAliasDeclaration {
   kind: "type_alias";
   name: string;
   sourceFile?: string;
+  typeParams?: string[]; // generic type parameter names, e.g. ["T", "U"]
   type: TypeNode;
   description?: string;
   tags?: Record<string, string>; // JSDoc tags like @additionalProperties
