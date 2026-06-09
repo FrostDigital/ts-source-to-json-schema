@@ -191,6 +191,33 @@ export class Parser {
     }
   }
 
+  private parseTypeParameters(): string[] | undefined {
+    // Parse generic param names: interface Foo<T, U extends Bar, V = string>
+    // Constraints and defaults are skipped; only the parameter names are kept.
+    if (!this.match("punctuation", "<")) return undefined;
+
+    const names: string[] = [];
+    let depth = 1;
+    let expectName = true;
+
+    while (depth > 0 && !this.is("eof")) {
+      if (this.is("punctuation", "<")) {
+        depth++;
+      } else if (this.is("punctuation", ">")) {
+        depth--;
+        if (depth === 0) { this.advance(); break; }
+      } else if (depth === 1 && this.is("punctuation", ",")) {
+        expectName = true;
+      } else if (depth === 1 && expectName && this.is("identifier")) {
+        names.push(this.peek().value);
+        expectName = false;
+      }
+      this.advance();
+    }
+
+    return names.length > 0 ? names : undefined;
+  }
+
   private isReExport(): boolean {
     // Look ahead to detect: export { ... } from "path" or export * from "path"
     // or export type { ... } from "path"
@@ -353,9 +380,8 @@ export class Parser {
     this.expect("keyword", "interface");
     const name = this.expect("identifier").value;
 
-    // Skip type parameters if present (e.g., <T, U>)
-    // We don't parse them yet, but need to skip them to avoid parse errors
-    this.skipTypeParameters();
+    // Parse type parameters if present (e.g., <T, U>)
+    const typeParams = this.parseTypeParameters();
 
     // extends clause
     let extendsTypes: TypeNode[] | undefined;
@@ -371,6 +397,7 @@ export class Parser {
     return {
       kind: "interface",
       name,
+      typeParams,
       extends: extendsTypes,
       properties,
       indexSignature,
@@ -389,8 +416,8 @@ export class Parser {
     this.expect("keyword", "type");
     const name = this.expect("identifier").value;
 
-    // Skip type parameters if present (e.g., <T, U>)
-    this.skipTypeParameters();
+    // Parse type parameters if present (e.g., <T, U>)
+    const typeParams = this.parseTypeParameters();
 
     this.expect("punctuation", "=");
     const type = this.parseType();
@@ -401,6 +428,7 @@ export class Parser {
     return {
       kind: "type_alias",
       name,
+      typeParams,
       type,
       description: jsdoc?.description,
       tags: jsdoc?.tags,

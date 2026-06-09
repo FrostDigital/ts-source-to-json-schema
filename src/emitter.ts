@@ -252,50 +252,12 @@ export class Emitter {
   }
 
   /**
-   * Check if a declaration is generic (has type parameters like T, U, V, W)
+   * Check if a declaration is generic (declares type parameters like <T, U>)
    */
   private isGenericDeclaration(decl: Declaration): boolean {
-    const typeParamNames = ['T', 'U', 'V', 'W', 'K', 'TKey', 'TValue'];
-
-    const hasTypeParamRef = (typeNode: TypeNode): boolean => {
-      switch (typeNode.kind) {
-        case "reference":
-          // Check if this references a type parameter
-          if (typeParamNames.includes(typeNode.name)) {
-            return true;
-          }
-          // Check type arguments
-          if (typeNode.typeArgs) {
-            return typeNode.typeArgs.some(hasTypeParamRef);
-          }
-          return false;
-        case "array":
-          return hasTypeParamRef(typeNode.element);
-        case "object":
-          return typeNode.properties.some(p => hasTypeParamRef(p.type)) ||
-                 (typeNode.indexSignature ? hasTypeParamRef(typeNode.indexSignature.valueType) : false);
-        case "union":
-          return typeNode.members.some(hasTypeParamRef);
-        case "intersection":
-          return typeNode.members.some(hasTypeParamRef);
-        case "tuple":
-          return typeNode.elements.some(e => hasTypeParamRef(e.type));
-        case "record":
-          return hasTypeParamRef(typeNode.keyType) || hasTypeParamRef(typeNode.valueType);
-        case "parenthesized":
-          return hasTypeParamRef(typeNode.inner);
-        default:
-          return false;
-      }
-    };
-
-    if (decl.kind === "interface") {
-      return decl.properties.some(p => hasTypeParamRef(p.type)) ||
-             (decl.indexSignature ? hasTypeParamRef(decl.indexSignature.valueType) : false);
-    } else if (decl.kind === "type_alias") {
-      return hasTypeParamRef(decl.type);
+    if (decl.kind === "interface" || decl.kind === "type_alias") {
+      return !!decl.typeParams && decl.typeParams.length > 0;
     }
-
     return false; // Enums can't be generic
   }
 
@@ -1260,17 +1222,25 @@ export class Emitter {
   }
 
   /**
-   * Instantiate a generic interface with concrete type arguments
+   * Map a declaration's type parameter names to concrete type arguments.
+   * Falls back to conventional names (T, U, V, W) for declarations that
+   * were constructed without typeParams (e.g. hand-built ASTs).
    */
-  private instantiateInterface(decl: InterfaceDeclaration, typeArgs: TypeNode[]): JSONSchema {
-    // Build type parameter mapping
-    // LIMITATION: We assume conventional param names (T, U, V, W)
-    // since we don't parse type parameter declarations yet
+  private buildTypeParamMap(typeParams: string[] | undefined, typeArgs: TypeNode[]): Map<string, TypeNode> {
+    const paramNames = typeParams && typeParams.length > 0 ? typeParams : ['T', 'U', 'V', 'W'];
     const typeParamMap = new Map<string, TypeNode>();
-    const paramNames = ['T', 'U', 'V', 'W'];
     for (let i = 0; i < Math.min(typeArgs.length, paramNames.length); i++) {
       typeParamMap.set(paramNames[i], typeArgs[i]);
     }
+    return typeParamMap;
+  }
+
+  /**
+   * Instantiate a generic interface with concrete type arguments
+   */
+  private instantiateInterface(decl: InterfaceDeclaration, typeArgs: TypeNode[]): JSONSchema {
+    // Map the declaration's type parameter names to the provided type arguments
+    const typeParamMap = this.buildTypeParamMap(decl.typeParams, typeArgs);
 
     // Substitute type parameters in all properties
     const instantiatedProps = decl.properties.map(prop => ({
@@ -1312,12 +1282,8 @@ export class Emitter {
    * Instantiate a generic type alias with concrete type arguments
    */
   private instantiateTypeAlias(decl: TypeAliasDeclaration, typeArgs: TypeNode[]): JSONSchema {
-    // Build type parameter mapping (same as interface)
-    const typeParamMap = new Map<string, TypeNode>();
-    const paramNames = ['T', 'U', 'V', 'W'];
-    for (let i = 0; i < Math.min(typeArgs.length, paramNames.length); i++) {
-      typeParamMap.set(paramNames[i], typeArgs[i]);
-    }
+    // Map the declaration's type parameter names to the provided type arguments
+    const typeParamMap = this.buildTypeParamMap(decl.typeParams, typeArgs);
 
     // Substitute type parameters in the aliased type
     const instantiatedType = this.substituteTypeParams(decl.type, typeParamMap);

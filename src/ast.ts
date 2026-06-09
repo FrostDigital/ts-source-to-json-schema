@@ -53,6 +53,7 @@ export interface InterfaceDeclaration {
   kind: "interface";
   name: string;
   sourceFile?: string;
+  typeParams?: string[]; // generic type parameter names, e.g. ["T", "U"]
   extends?: TypeNode[];
   properties: PropertyNode[];
   indexSignature?: IndexSignatureNode;
@@ -65,6 +66,7 @@ export interface TypeAliasDeclaration {
   kind: "type_alias";
   name: string;
   sourceFile?: string;
+  typeParams?: string[]; // generic type parameter names, e.g. ["T", "U"]
   type: TypeNode;
   description?: string;
   tags?: Record<string, string>; // JSDoc tags like @additionalProperties
