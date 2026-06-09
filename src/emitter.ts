@@ -895,6 +895,9 @@ export class Emitter {
       case "record":
         return this.emitRecord(node.keyType, node.valueType);
 
+      case "function":
+        return {}; // functions are not representable in JSON Schema
+
       case "template_literal":
         return { type: "string" }; // Best we can do without regex generation
 
@@ -923,12 +926,22 @@ export class Emitter {
     }
   }
 
+  /** True if the node is a function type, possibly wrapped in parentheses. */
+  private isFunctionTypeNode(node: TypeNode): boolean {
+    if (node.kind === "function") return true;
+    if (node.kind === "parenthesized") return this.isFunctionTypeNode(node.inner);
+    return false;
+  }
+
   private emitObjectType(properties: PropertyNode[], indexSignature?: IndexSignatureNode, tags?: Record<string, string>): JSONSchema {
     const schema: JSONSchema = { type: "object" };
     const props: Record<string, JSONSchema> = {};
     const required: string[] = [];
 
     for (const prop of properties) {
+      // Function-typed properties have no JSON Schema representation - omit them
+      if (this.isFunctionTypeNode(prop.type)) continue;
+
       const propSchema = this.emitType(prop.type);
 
       // Apply JSDoc tags

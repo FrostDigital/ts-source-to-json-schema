@@ -33,6 +33,7 @@ export type TypeNode =
   | { kind: "enum_member_access"; enumName: string; memberName: string }
   | { kind: "parenthesized"; inner: TypeNode }
   | { kind: "template_literal"; parts: (string | TypeNode)[] }
+  | { kind: "function" } // function/method types - not representable in JSON Schema
   | { kind: "record"; keyType: TypeNode; valueType: TypeNode }
   | { kind: "mapped"; keyName: string; constraint: TypeNode; valueType: TypeNode; optional?: boolean };
 
