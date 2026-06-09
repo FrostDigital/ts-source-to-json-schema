@@ -30,9 +30,11 @@ The trade-off is explicit: it handles the type constructs you'd actually use in 
 - **Generic type instantiation**: `interface Foo extends Generic<TypeArg>` → inlines with type parameter substitution
   - Supports interfaces and type aliases with type arguments
   - Handles nested generics: `Box<Box<string>>`
-  - Multiple type parameters: `Pair<T, U>`
+  - Multiple type parameters with any names: `Pair<T, U>`, `ApiResponse<TData>`, `Pair<First, Second>`
+  - Constraints and defaults are accepted (`<T extends string = "a">`), though not enforced
   - Type parameters are substituted throughout properties, arrays, unions, etc.
   - Falls back to `$ref` when generic definition is not found
+- **Function/method members**: `onChange: (value: string) => void` and `findById(id: string): User` are omitted from the schema (functions have no JSON representation) instead of failing the conversion
 - **Utility types**: `Partial<T>`, `Required<T>`, `Pick<T, K>`, `Omit<T, K>`, `Record<K, V>`, `Readonly<T>`, `Set<T>`, `Map<K, V>`, `Promise<T>` (unwrapped)
 - **Local imports**: Automatic resolution of relative imports (`./` and `../`) across files
 - **JSDoc**: `/** description */` → `description`, plus tags: `@minimum`, `@maximum`, `@minLength`, `@maxLength`, `@pattern`, `@format`, `@default`, `@deprecated`, `@title`, `@example`, `@additionalProperties`
@@ -438,6 +440,7 @@ toJsonSchema(source, {
   schemaVersion: "https://json-schema.org/draft/2020-12/schema",
   includeJSDoc: true,            // Include JSDoc descriptions and tags (default: true)
   additionalProperties: undefined, // Default value for additionalProperties (undefined, true, or false)
+  onUnresolvedReferences: 'ignore', // Handle dangling $refs: 'error', 'warn', 'ignore' (default)
 });
 
 toJsonSchemaFromFile(filePath, {
@@ -705,6 +708,34 @@ toJsonSchemaFromFile('entry.ts', {
 2. If they're different but have the same name, rename one of them for clarity
 3. Use `warn` or `silent` mode only as a temporary workaround
 
+### `onUnresolvedReferences` (optional)
+- **Type:** `"error" | "warn" | "ignore"`
+- **Default:** `"ignore"`
+- **Description:** Controls how to handle `$ref` pointers to types that are not defined in the emitted schema
+
+A reference to a type that is not declared in the source (a typo, or an import that was not followed because `followImports` is `"none"`) produces a schema with a dangling `$ref` — it looks valid, but fails later when a validator like AJV tries to resolve it.
+
+**Modes:**
+- `error`: Throws an error listing the unresolved type names (and, in batch mode, which schema contains them)
+- `warn`: Emits the schema as-is and logs a warning to `console.warn`
+- `ignore` (default): Emits the schema as-is, preserving previous behavior
+
+**Example:**
+```typescript
+// "Customer" is referenced but never declared
+toJsonSchema(`interface Order { customer: Customer }`, {
+  rootType: 'Order',
+  onUnresolvedReferences: 'error'
+});
+// Error: Unresolved type reference: Customer. The referenced type(s) are
+// not defined in the provided source. Define them, enable followImports,
+// or set onUnresolvedReferences to "warn" or "ignore".
+```
+
+**Best practice:** Set `'error'` in CI or build pipelines to catch typos and missing imports at generation time instead of at validation time. The default stays `'ignore'` for backward compatibility — schemas that intentionally carry external references (resolved by your validator's registry) keep working.
+
+Works with `toJsonSchema`, `toJsonSchemas`, and the file-based variants.
+
 ### `defineId` (optional)
 - **Type:** `(originalName: string, declaration: Declaration, context?: { absolutePath: string; relativePath: string }) => string`
 - **Default:** `undefined`
@@ -781,10 +812,10 @@ Anything that requires the type checker to evaluate:
 - `typeof`, `keyof`, `infer`
 - `node_modules` imports (planned for future)
 
-**Generic type parameter limitations:**
-- Currently assumes conventional type parameter names (`T`, `U`, `V`, `W`)
-- Custom parameter names like `interface Box<TValue> { value: TValue }` won't work correctly (it would look for `T` instead of `TValue`)
-- This works for 95%+ of real-world cases where generics use standard names
-- Maximum 4 type parameters supported
+**Generic type parameter notes:**
+- Type parameter names are parsed from the declaration, so any names work: `Box<TValue>`, `Pair<First, Second>`
+- Constraints (`extends ...`) and defaults (`= ...`) are parsed but not enforced or applied — a type argument must always be passed explicitly
+
+**Function and method types** (`onChange: (v: string) => void`, `save(): void`) are not representable in JSON Schema. They are parsed and omitted from the output rather than treated as errors.
 
 If you need these, use `ts-json-schema-generator`. If your types look like API contracts and tool definitions, this is probably all you need.
