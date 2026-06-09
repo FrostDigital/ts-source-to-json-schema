@@ -66,6 +66,16 @@ export interface EmitterOptions {
    */
   onDuplicateDeclarations?: 'error' | 'warn' | 'silent';
   /**
+   * How to handle $ref pointers to types that are not defined in the output.
+   * Dangling references typically come from typos, or from imports that were
+   * not followed (followImports: "none").
+   * - 'error': Throw an error listing the unresolved type names
+   * - 'warn': Emit the schema, log a warning
+   * - 'ignore': Emit the schema as-is (default, backward compatible)
+   * Default: 'ignore'
+   */
+  onUnresolvedReferences?: 'error' | 'warn' | 'ignore';
+  /**
    * Callback to transform type names in $defs and $ref pointers.
    * Useful for namespacing types by file, adding prefixes/suffixes, or custom naming schemes.
    *
@@ -238,6 +248,7 @@ export class Emitter {
       followImports: options.followImports ?? "none",
       baseDir: options.baseDir ?? "",
       onDuplicateDeclarations: options.onDuplicateDeclarations ?? "error",
+      onUnresolvedReferences: options.onUnresolvedReferences ?? "ignore",
       defineNameTransform: options.defineNameTransform,
       defineId: options.defineId,
     };
@@ -345,6 +356,7 @@ export class Emitter {
           result.$schema = this.options.schemaVersion;
         }
         result.$defs = defs;
+        this.checkUnresolvedReferences(result);
         return result;
       }
 
@@ -358,6 +370,7 @@ export class Emitter {
       if (Object.keys(defs).length > 0) {
         result.$defs = defs;
       }
+      this.checkUnresolvedReferences(result);
       return result;
     }
 
@@ -367,7 +380,66 @@ export class Emitter {
       result.$schema = this.options.schemaVersion;
     }
     result.$defs = defs;
+    this.checkUnresolvedReferences(result);
     return result;
+  }
+
+  /**
+   * Verifies that every local $ref in the final schema points at a definition
+   * that actually exists, honoring the onUnresolvedReferences option.
+   */
+  private checkUnresolvedReferences(schema: JSONSchema, context?: string): void {
+    const mode = this.options.onUnresolvedReferences;
+    if (mode === "ignore") return;
+
+    const available = new Set<string>([
+      ...Object.keys(schema.$defs ?? {}),
+      ...Object.keys((schema.definitions as Record<string, JSONSchema> | undefined) ?? {}),
+    ]);
+
+    const refs = this.collectLocalRefTargets(schema);
+    const missing = [...new Set(refs)].filter((name) => !available.has(name)).sort();
+    if (missing.length === 0) return;
+
+    const message =
+      `Unresolved type reference${missing.length > 1 ? "s" : ""}` +
+      `${context ? ` in schema "${context}"` : ""}: ${missing.join(", ")}. ` +
+      `The referenced type(s) are not defined in the provided source. ` +
+      `Define them, enable followImports, or set onUnresolvedReferences to "warn" or "ignore".`;
+
+    if (mode === "error") {
+      throw new Error(message);
+    }
+    console.warn(message);
+  }
+
+  /**
+   * Collects the type names targeted by local $ref pointers
+   * (#/$defs/Name or #/definitions/Name) anywhere in a schema.
+   */
+  private collectLocalRefTargets(schema: JSONSchema): string[] {
+    const refs: string[] = [];
+
+    const walk = (obj: unknown): void => {
+      if (typeof obj !== "object" || obj === null) return;
+
+      const ref = (obj as JSONSchema).$ref;
+      if (typeof ref === "string") {
+        const match = ref.match(/^#\/(?:\$defs|definitions)\/(.+)$/);
+        if (match) refs.push(match[1]);
+      }
+
+      for (const value of Object.values(obj)) {
+        if (Array.isArray(value)) {
+          value.forEach(walk);
+        } else if (typeof value === "object" && value !== null) {
+          walk(value);
+        }
+      }
+    };
+
+    walk(schema);
+    return refs;
   }
 
   /**
@@ -385,6 +457,7 @@ export class Emitter {
       }
       const key = this.getDefineId(typeName) ?? this.getDefineName(typeName);
       schemas[key] = this.emitDeclarationStandalone(decl);
+      this.checkUnresolvedReferences(schemas[key], key);
     }
 
     return schemas;
