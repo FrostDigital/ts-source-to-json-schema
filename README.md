@@ -37,7 +37,9 @@ The trade-off is explicit: it handles the type constructs you'd actually use in 
 - **Function/method members**: `onChange: (value: string) => void` and `findById(id: string): User` are omitted from the schema (functions have no JSON representation) instead of failing the conversion
 - **Utility types**: `Partial<T>`, `Required<T>`, `Pick<T, K>`, `Omit<T, K>`, `Record<K, V>`, `Readonly<T>`, `Set<T>`, `Map<K, V>`, `Promise<T>` (unwrapped)
 - **Local imports**: Automatic resolution of relative imports (`./` and `../`) across files
-- **JSDoc**: `/** description */` → `description`, plus tags: `@minimum`, `@maximum`, `@minLength`, `@maxLength`, `@pattern`, `@format`, `@default`, `@deprecated`, `@title`, `@example`, `@additionalProperties`
+- **JSDoc**: `/** description */` → `description`, plus tags: `@minimum`, `@maximum`, `@minLength`, `@maxLength`, `@pattern`, `@format`, `@minItems`, `@maxItems`, `@uniqueItems`, `@default`, `@deprecated`, `@title`, `@example`, `@additionalProperties`, `@oneOf`, `@anyOf`
+  - On array properties (`string[]`, `Array<T>`, …) value constraints like `@format uuid` apply to the **items**, so `/** @format uuid */ to: string[]` validates every element
+  - `@oneOf` / `@anyOf` express cross-field rules: `@oneOf required(message, to) | required(message, conversationId)`; a bare `@oneOf` on a union type alias emits `oneOf` instead of `anyOf`
 - **Readonly**: `readonly` → `readOnly` in schema
 
 ## Installation
@@ -607,6 +609,79 @@ interface Settings {
 - When `includeJSDoc: false`, the tag is ignored
 - The tag overrides the global `additionalProperties` and `strictObjects` options
 - Index signatures take precedence over the tag
+
+### JSDoc Tags on Array Properties
+
+On an array-typed property (`T[]`, `Array<T>`, `readonly T[]`, `Set<T>`, `T[] | null`, nested `T[][]`), value
+constraints describe the **elements**, so they are applied to `items` rather than the array itself
+(where JSON Schema would silently ignore them):
+
+```typescript
+interface SendMessageRequest {
+  /**
+   * @format uuid
+   * @minItems 1
+   * @uniqueItems
+   */
+  to: string[];
+}
+// Result:
+// to: { type: 'array', items: { type: 'string', format: 'uuid' }, minItems: 1, uniqueItems: true }
+```
+
+| Applied to `items` | Stays on the array |
+|---|---|
+| `@format`, `@pattern`, `@minLength`, `@maxLength`, `@minimum`, `@maximum`, `@additionalProperties` | `@minItems`, `@maxItems`, `@uniqueItems`, `@title`, `@default`, `@example`, `@deprecated`, description |
+
+Tuples (`[string, number]`) are not affected — their elements are heterogeneous.
+
+### `@oneOf` / `@anyOf` JSDoc Tags
+
+TypeScript interfaces cannot express "either these fields or those fields". The `@oneOf` and `@anyOf`
+tags let a declaration (or an inline object property) declare cross-field requirements as
+`|`-separated groups of property names. Each group becomes `{ required: [...] }` under the combinator:
+
+```typescript
+/**
+ * Either (message + to) or (message + conversationId), never both.
+ * @oneOf required(message, to) | required(message, conversationId)
+ */
+interface SendMessageRequest {
+  message: string;
+  to?: string[];
+  conversationId?: string;
+}
+// Result:
+// {
+//   type: 'object',
+//   properties: { ... },
+//   required: ['message'],
+//   oneOf: [ { required: ['message', 'to'] }, { required: ['message', 'conversationId'] } ]
+// }
+
+/** @anyOf required(email) | required(phoneNumber) | required(skypeId) */
+interface ContactRequest {
+  email?: string;
+  phoneNumber?: string;
+  skypeId?: string;
+}
+// Result: anyOf: [ { required: ['email'] }, { required: ['phoneNumber'] }, { required: ['skypeId'] } ]
+```
+
+The `required(...)` wrapper is optional — `@anyOf email | phoneNumber | skypeId` is equivalent.
+
+**Unions:** a union of object types is emitted as `anyOf` (matching TypeScript semantics, where a value
+may satisfy several members). Add a bare `@oneOf` to the type alias when exactly one member must match:
+
+```typescript
+/** @oneOf */
+export type SendMessageRequest =
+  | { message: string; to: string[]; referenceId?: string }
+  | { message: string; conversationId: string };
+// Result: { oneOf: [ { type: 'object', ... }, { type: 'object', ... } ] }
+```
+
+Both tags are ignored when `includeJSDoc: false`.
 
 ### `followImports` (optional)
 - **Type:** `"none" | "local" | "all"`
