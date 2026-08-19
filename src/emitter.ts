@@ -20,6 +20,7 @@ export interface JSONSchema {
   prefixItems?: JSONSchema[];
   minItems?: number;
   maxItems?: number;
+  uniqueItems?: boolean;
   anyOf?: JSONSchema[];
   allOf?: JSONSchema[];
   oneOf?: JSONSchema[];
@@ -882,36 +883,38 @@ export class Emitter {
       }
 
       // If only one schema in allOf, unwrap it
-      if (allOf.length === 1) {
-        const result = allOf[0];
-        if (this.options.includeJSDoc && decl.description) result.description = decl.description;
-        return result;
-      }
-
-      const result: JSONSchema = { allOf };
-      if (this.options.includeJSDoc && decl.description) result.description = decl.description;
+      const result: JSONSchema = allOf.length === 1 ? allOf[0] : { allOf };
+      this.applyDeclarationJSDoc(result, decl);
       return result;
     }
 
-    if (this.options.includeJSDoc && decl.description) schema.description = decl.description;
+    this.applyDeclarationJSDoc(schema, decl);
     return schema;
   }
 
   private emitTypeAlias(decl: TypeAliasDeclaration): JSONSchema {
-    const schema = this.emitType(decl.type);
-    if (this.options.includeJSDoc) {
-      if (decl.description) schema.description = decl.description;
-      // Apply @additionalProperties tag if this is an object type
-      if (decl.tags?.additionalProperties !== undefined && schema.type === "object") {
-        const value = decl.tags.additionalProperties.toLowerCase();
-        if (value === "true") {
-          schema.additionalProperties = true;
-        } else if (value === "false") {
-          schema.additionalProperties = false;
-        }
-      }
-    }
+    // Object-literal aliases get their tags via emitObjectType so that
+    // @additionalProperties follows the same precedence rules as interfaces
+    const schema = decl.type.kind === "object"
+      ? this.emitObjectType(decl.type.properties, decl.type.indexSignature, decl.tags)
+      : this.emitType(decl.type);
+    this.applyDeclarationJSDoc(schema, decl);
     return schema;
+  }
+
+  /** Apply a declaration's JSDoc description and tags to its emitted schema. */
+  private applyDeclarationJSDoc(schema: JSONSchema, decl: InterfaceDeclaration | TypeAliasDeclaration): void {
+    if (!this.options.includeJSDoc) return;
+    if (decl.description) schema.description = decl.description;
+    if (!decl.tags) return;
+    // @additionalProperties on object declarations is already applied by emitObjectType
+    // with the correct precedence (index signature > tag > options) - don't re-apply it
+    let tags = decl.tags;
+    if (schema.type === "object" && "additionalProperties" in tags) {
+      const { additionalProperties: _ignored, ...rest } = tags;
+      tags = rest;
+    }
+    this.applyJSDocTags(schema, tags);
   }
 
   private emitEnum(decl: EnumDeclaration): JSONSchema {
@@ -1527,13 +1530,41 @@ export class Emitter {
   // JSDoc tag application
   // ---------------------------------------------------------------------------
 
+  /**
+   * Tags that constrain the *value* a schema describes (as opposed to metadata like
+   * @title or @default). When the schema is an array, these describe each element,
+   * so they are routed to `items` (see applyJSDocTags).
+   */
+  private static readonly ITEM_CONSTRAINT_TAGS = new Set([
+    "minimum", "maximum", "minLength", "maxLength", "pattern", "format", "additionalProperties",
+  ]);
+
   private applyJSDocTags(schema: JSONSchema, tags: Record<string, string>): void {
+    // Array schemas (T[], Array<T>, Set<T>, readonly T[], nullable arrays): value
+    // constraints such as @format or @minimum are meaningless on the array itself
+    // and almost certainly describe the elements, so apply them to `items` instead.
+    // Array-level tags (@minItems, @maxItems, @uniqueItems) and metadata stay put.
+    // Tuples (prefixItems) are excluded since their elements are heterogeneous.
+    if (schema.items !== undefined && schema.prefixItems === undefined) {
+      const itemTags: Record<string, string> = {};
+      const ownTags: Record<string, string> = {};
+      for (const [key, value] of Object.entries(tags)) {
+        if (Emitter.ITEM_CONSTRAINT_TAGS.has(key)) itemTags[key] = value;
+        else ownTags[key] = value;
+      }
+      if (Object.keys(itemTags).length > 0) this.applyJSDocTags(schema.items, itemTags);
+      tags = ownTags;
+    }
+
     for (const [key, value] of Object.entries(tags)) {
       switch (key) {
         case "minimum": schema.minimum = Number(value); break;
         case "maximum": schema.maximum = Number(value); break;
         case "minLength": schema.minLength = Number(value); break;
         case "maxLength": schema.maxLength = Number(value); break;
+        case "minItems": schema.minItems = Number(value); break;
+        case "maxItems": schema.maxItems = Number(value); break;
+        case "uniqueItems": schema.uniqueItems = value.toLowerCase() !== "false"; break;
         case "pattern": schema.pattern = value; break;
         case "format": schema.format = value; break;
         case "default":
@@ -1563,7 +1594,56 @@ export class Emitter {
             }
           }
           break;
+        case "oneOf":
+        case "anyOf":
+          this.applyCombinatorTag(schema, key, value);
+          break;
       }
     }
+  }
+
+  /**
+   * Handle `@oneOf` / `@anyOf`.
+   *
+   * - With a value, the tag declares cross-field requirements on an object:
+   *     `@oneOf required(message, to) | required(message, conversationId)`
+   *     `@anyOf required(email) | required(phoneNumber) | required(skypeId)`
+   *   Each `|`-separated alternative becomes `{ required: [...] }` under the combinator.
+   *   (The `required(...)` wrapper is optional; a bare `a, b | c` is accepted too.)
+   *
+   * - A bare `@oneOf` (no value) on a union type switches the emitted `anyOf`
+   *   to `oneOf`, i.e. exactly one member must match rather than at least one.
+   */
+  private applyCombinatorTag(schema: JSONSchema, key: "oneOf" | "anyOf", value: string): void {
+    if (value === "") {
+      if (key === "oneOf" && schema.anyOf && !schema.oneOf) {
+        schema.oneOf = schema.anyOf;
+        delete schema.anyOf;
+      }
+      return;
+    }
+
+    const groups = this.parseRequiredGroups(value);
+    if (groups.length === 0) return;
+
+    if (schema[key]) {
+      // The schema already uses this combinator (e.g. a union) — add the constraint alongside it
+      if (!schema.allOf) schema.allOf = [];
+      schema.allOf.push({ [key]: groups });
+    } else {
+      schema[key] = groups;
+    }
+  }
+
+  /** Parse `required(a, b) | required(c)` (or `a, b | c`) into `[{ required: [a, b] }, { required: [c] }]`. */
+  private parseRequiredGroups(value: string): JSONSchema[] {
+    const groups: JSONSchema[] = [];
+    for (const alternative of value.split("|")) {
+      const match = alternative.trim().match(/^required\s*\((.*)\)$/s);
+      const inner = match ? match[1] : alternative;
+      const names = inner.split(",").map(n => n.trim()).filter(Boolean);
+      if (names.length > 0) groups.push({ required: names });
+    }
+    return groups;
   }
 }

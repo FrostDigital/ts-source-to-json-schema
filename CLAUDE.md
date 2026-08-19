@@ -115,9 +115,13 @@ The library has **full JSDoc support** with two control mechanisms:
 ### 2. JSDoc Tags
 Supported tags (applied to schema properties):
 - **Numeric constraints:** `@minimum`, `@maximum`
+- **Array constraints:** `@minItems`, `@maxItems`, `@uniqueItems`
+- **Cross-field rules:** `@oneOf` / `@anyOf` with `required(a, b) | required(c)` groups; bare `@oneOf` on a union alias emits `oneOf` instead of `anyOf`
 - **String constraints:** `@minLength`, `@maxLength`, `@pattern`, `@format`
 - **Metadata:** `@default`, `@example`, `@deprecated`, `@title`
 - **Object control:** `@additionalProperties` (true/false, case-insensitive)
+
+Declaration-level tags (on interfaces/type aliases) go through the same `applyJSDocTags()` via `applyDeclarationJSDoc()`. On array schemas (`items` present, no `prefixItems`), value constraints (`@format`, `@pattern`, `@min*`/`@max*` length/value, `@additionalProperties`) are routed to `items`; array-level tags and metadata stay on the array.
 
 **Tag application precedence for `additionalProperties`:**
 1. Index signature: `[key: string]: T`
